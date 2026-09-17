@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WorkBuddy 词元用量看板</title>
+<style>
+:root{
+  --bg:#f4f5f7;--card:#ffffff;--line:#e4e6eb;--line2:#eef0f3;
+  --tx:#1f2329;--tx2:#6b7280;--tx3:#9aa1ab;
+  --c-fresh:#3370ff;--c-cache:#a9c2ff;--c-out:#00b2b2;
+  --blue:#3370ff;--red:#e5484d;--green:#16a34a;--amber:#f59e0b;
+  /* 会话标题列显示宽度（px），由表头把手拖拽调整，JS 会覆盖并在 localStorage 持久化 */
+  --sess-w:220px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--tx);font-size:14px;line-height:1.6;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:1220px;margin:0 auto;padding:26px 20px 64px}
+.hd{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+.hd h1{font-size:21px;margin:0 0 4px;font-weight:650;letter-spacing:-.2px}
+.hd .sub{color:var(--tx2);font-size:12.5px}
+.hd .sub code{background:#eceef1;padding:1px 5px;border-radius:4px;font-size:11.5px}
+.live{display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--tx2);
+  background:var(--card);border:1px solid var(--line);border-radius:9px;padding:8px 12px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--green);flex:none}
+.dot.err{background:var(--red)}
+.dot.busy{background:var(--amber);animation:pulse 1s infinite}
+@keyframes pulse{50%{opacity:.3}}
+.btn{border:1px solid var(--line);background:#fff;color:var(--tx);border-radius:6px;
+  padding:3px 11px;font-size:12.5px;cursor:pointer;font-family:inherit}
+.btn:hover{background:#f7f8fa;border-color:#d0d4da}
+.btn.on,.btn.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+.btn.primary:hover{background:#2a63e8;border-color:#2a63e8}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.pick{position:relative;display:inline-block}
+.pop{position:absolute;top:calc(100% + 7px);left:0;z-index:40;background:#fff;border:1px solid var(--line);
+  border-radius:10px;padding:11px 12px 10px;box-shadow:0 10px 26px rgba(20,30,60,.16);display:none;min-width:200px}
+.pop.open{display:block}
+.pop .pl{font-size:11.5px;color:var(--tx2);margin:0 0 5px}
+.pop .pl+.pl{margin-top:10px}
+.pop input[type=date]{width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:7px;
+  font-size:13px;font-family:inherit;color:var(--tx);background:#fff}
+.pop input[type=date]:focus{outline:none;border-color:var(--blue)}
+.pop .pa{margin-top:11px;display:flex;gap:7px;justify-content:flex-end}
+.pop .pa .btn{padding:4px 13px}
+.pop .pmsg{font-size:11.5px;color:var(--red);margin-top:7px}
+.pop .pmsg:empty{display:none}
+.pop .ph2{font-size:12.5px;font-weight:620;margin:0 0 8px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:11px;margin-bottom:18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:11px;padding:13px 15px 14px}
+.card .k{color:var(--tx2);font-size:12px;margin-bottom:5px}
+.card .v{font-size:23px;font-weight:640;font-variant-numeric:tabular-nums;letter-spacing:-.4px;line-height:1.25}
+.card .v .mn{font-size:14px;font-weight:500;color:var(--tx2);margin-left:3px}
+.card .h{font-size:11.5px;color:var(--tx3);margin-top:3px}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:11px;
+  padding:15px 17px 17px;margin-bottom:16px}
+.panel .ph{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  flex-wrap:wrap;margin-bottom:14px}
+.panel h2{font-size:14.5px;margin:0;font-weight:620}
+.panel h2 small{color:var(--tx3);font-weight:400;font-size:12px;margin-left:7px}
+.legend{display:flex;gap:14px;font-size:12px;color:var(--tx2);align-items:center;flex-wrap:wrap}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.chart{width:100%;overflow-x:auto}
+.chart svg{display:block}
+.bar{transition:opacity .12s}
+.bar:hover{opacity:.78}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th,td{padding:7px 9px;border-bottom:1px solid var(--line2);text-align:right;font-size:13px;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--tx2);font-weight:500;font-size:11.5px;position:sticky;top:0;background:var(--card);z-index:2}
+th.help{cursor:help;text-decoration:underline dotted var(--tx3);text-underline-offset:3px}
+tbody tr:hover td{background:#f5f8ff}
+td.mono{font-family:ui-monospace,Consolas,monospace;font-size:12px}
+/* 会话标题列宽由 CSS 变量 --sess-w 控制（拖拽列边界把手调整，值存 localStorage）。
+   截断交给 CSS ellipsis：浏览器按真实像素算，中英混排也准，且拖动时无需重渲染。 */
+td.sess .st{display:inline-block;max-width:var(--sess-w,220px);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
+td.sess .sid{margin-left:6px;font-family:ui-monospace,Consolas,monospace;font-size:11px;color:var(--tx3);vertical-align:bottom}
+/* 列宽把手：绝对定位钉在「会话标题」列右边界（right:0 = 与「请求数」列的交界），
+   因此列一宽它就跟着往右走，像 Excel 的列分隔线。th 是 position:sticky，本身即
+   positioned，可作为 absolute 的 containing block。 */
+th.sessh{position:relative;padding-right:16px}
+.sessgrip{position:absolute;top:50%;right:1px;width:8px;height:14px;margin-top:-7px;
+  border-radius:3px;cursor:col-resize;opacity:.5;color:var(--tx3);
+  background-image:repeating-linear-gradient(90deg,currentColor 0 1px,transparent 1px 4px)}
+.sessgrip:hover,.sessgrip.on{opacity:1;color:var(--blue);background-color:#eef3ff}
+/* 面板说明里的同款图标：纯装饰，不可拖（不绑事件、光标不改） */
+.gripico{display:inline-block;width:8px;height:13px;margin:0 2px;vertical-align:-2px;
+  border-radius:3px;opacity:.5;color:var(--tx3);
+  background-image:repeating-linear-gradient(90deg,currentColor 0 1px,transparent 1px 4px)}
+td .mu{font-size:11px;font-weight:500;color:var(--tx2);margin-left:2px}
+.scroll{max-height:430px;overflow:auto;border-radius:6px}
+.bar-inline{display:inline-block;height:7px;border-radius:4px;background:var(--c-fresh);vertical-align:middle}
+.note{color:var(--tx2);font-size:12px;margin-top:11px;line-height:1.7}
+.note b{font-weight:600;color:var(--tx)}
+/* 会话表列多、标题还要可调宽，1fr:1fr 会让它的「装得下」上限只剩 ~235px（比默认 220 只多
+   一点点，等于调不动）。给左栏 1.25 份、右栏 1 份：左栏可用 ~646px（上限提到 ~305px），
+   右栏仍有 ~483px，够放月度汇总那 7 列。 */
+.grid2{display:grid;grid-template-columns:1.25fr 1fr;gap:16px}
+/* grid 项默认 min-width:auto，不会缩到内容宽度以下：任一半栏内容一宽，两栏就会顶破
+   容器、把隔壁「月度汇总」推出右边界。置 0 后各栏严格按比例分，内部超宽由 .scroll
+   出横向滚动条兜底，容器绝不被撑破。 */
+.grid2>*{min-width:0}
+@media(max-width:820px){.grid2{grid-template-columns:1fr}.wrap{padding:18px 12px 48px}}
+.tip{position:fixed;pointer-events:none;background:#1f2329;color:#fff;padding:7px 10px;
+  border-radius:7px;font-size:12px;line-height:1.55;white-space:pre;text-align:left;z-index:99;
+  box-shadow:0 4px 16px rgba(0,0,0,.22);display:none;transform:translate(-50%,-100%)}
+.tip .tt{display:grid;grid-template-columns:auto auto auto;column-gap:14px}
+.tip .tt-h{grid-column:1/-1}
+.tip .tt-v{text-align:right}
+.errbox{background:#fff5f5;border:1px solid #ffd4d4;color:#a32222;border-radius:9px;
+  padding:10px 13px;font-size:12.5px;margin-bottom:14px}
+</style></head><body><div class="wrap">
+
+<div class="hd">
+  <div>
+    <h1>WorkBuddy 词元用量看板</h1>
+    <div class="sub">数据源 <code>~/.workbuddy/projects/**/*.jsonl</code> ｜ 覆盖 <span id="span">—</span> ｜ 共 <span id="recn">—</span> 条请求记录 ｜ 单位统一为 M（百万词元）<span id="ver"></span></div>
+  </div>
+  <div class="live">
+    <span class="dot" id="dot"></span>
+    <span id="status">连接中…</span>
+    <button class="btn" id="reload">刷新</button>
+  </div>
+</div>
+
+<div id="err"></div>
+
+<div class="tabs" style="margin-bottom:12px">
+  <button class="btn" data-r="today">今日（按小时）</button>
+  <button class="btn on" data-r="7">近 7 天</button>
+  <button class="btn" data-r="14">近 14 天</button>
+  <button class="btn" data-r="30">近 30 天</button>
+  <button class="btn" data-r="0">全部</button>
+  <span class="pick">
+    <button class="btn" id="btnDay" title="从日历里选一天，按小时查看">自选某天 ▾</button>
+    <div class="pop" id="popDay">
+      <div class="ph2">自选某天（按小时）</div>
+      <div class="pl">日期（限数据覆盖范围）</div>
+      <input type="date" id="inpDay">
+      <div class="pmsg" id="msgDay"></div>
+      <div class="pa"><button class="btn" data-close="1">取消</button><button class="btn primary" id="okDay">应用</button></div>
+    </div>
+  </span>
+  <span class="pick">
+    <button class="btn" id="btnRng" title="从日历里选起止日期，按天查看">自选区间 ▾</button>
+    <div class="pop" id="popRng">
+      <div class="ph2">自选区间（按天）</div>
+      <div class="pl">起始日期</div>
+      <input type="date" id="inpFrom">
+      <div class="pl">结束日期</div>
+      <input type="date" id="inpTo">
+      <div class="pmsg" id="msgRng"></div>
+      <div class="pa"><button class="btn" data-close="1">取消</button><button class="btn primary" id="okRng">应用</button></div>
+    </div>
+  </span>
+</div>
+
+<div class="cards" id="cards"></div>
+
+<div class="panel">
+  <div class="ph">
+    <h2 id="chartTitle">今日分时词元构成 <small id="chartNote"></small></h2>
+    <div class="legend">
+      <span><i style="background:var(--c-fresh)"></i>非缓存输入</span>
+      <span><i style="background:var(--c-cache)"></i>缓存命中输入</span>
+      <span><i style="background:var(--c-out)"></i>输出</span>
+    </div>
+  </div>
+  <div class="chart" id="chart"></div>
+  <div class="note" id="chartNoteBox"></div>
+</div>
+
+<div class="panel">
+  <div class="ph"><h2 id="dailyTitle">今日分时明细 <small>点击表头可排序，悬停看精确值</small></h2></div>
+  <div class="scroll"><table id="tblDaily"></table></div>
+</div>
+
+<div class="panel">
+  <div class="ph"><h2>模型分布 <small id="mNote"></small></h2></div>
+  <div class="scroll"><table id="tblModel"></table></div>
+</div>
+
+<div class="grid2">
+  <div class="panel">
+    <div class="ph"><h2>单会话消耗 Top 20 <small>灰色为会话 ID 前 8 位；悬停看完整标题与目录；标题宽度 <i class="gripico"></i> 可左右拖调（双击复位）</small></h2></div>
+    <div class="scroll"><table id="tblSess"></table></div>
+  </div>
+  <div class="panel">
+    <div class="ph"><h2>月度汇总</h2></div>
+    <div class="scroll"><table id="tblMonth"></table></div>
+  </div>
+</div>
+
+</div>
+<div class="tip" id="tip"></div>
+<script>
+var DATA=null, RANGE=7, SORT={k:'date',d:-1}, LAST_RANGE=null;
+var BASE=location.pathname.replace(/[^\/]*$/,'');
+var tip=document.getElementById('tip');
+
+function fmt(n){ n=Number(n||0); return n.toLocaleString('en-US'); }
+function M(n){
+  n=Number(n||0)/1e6;
+  var a=Math.abs(n);
+  if(a>=100) return n.toFixed(1);
+  if(a>=10) return n.toFixed(2);
+  if(a>=1) return n.toFixed(3);
+  if(a===0) return '0';
+  return n.toFixed(4);
+}
+function Mlabel(n){ return M(n)+' M'; }
+function Mx(n){ return M(n)+'<span class="mu">M</span>'; }
+function Mchart(n){
+  n=Number(n||0)/1e6;
+  if(n===0) return '0';
+  var a=Math.abs(n);
+  if(a>=100) return n.toFixed(0)+'M';
+  if(a>=10) return n.toFixed(1)+'M';
+  if(a>=1) return n.toFixed(2)+'M';
+  return n.toFixed(3)+'M';
+}
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+// 会话标题列的可调宽度（px）。用 CSS 变量驱动、由 CSS ellipsis 自动截断，
+// 好处是拖动时只改变量、不必重建表格；中英混排也按真实像素精确截断。
+// 值存在 localStorage（键 wb_sess_w），刷新/重开页面都保留。
+var SESS_W_DEF=220, SESS_W_MIN=70, SESS_W_MAX=600;
+// 自动收敛时的下限：栏被压得极窄时也不把标题压到看不见，宁可让 .scroll 出横向滚动条
+// （有 .grid2>*{min-width:0} 兜底，出滚动条也不会顶破隔壁面板）
+var SESS_W_FIT_MIN=160;
+var SESS_W=SESS_W_DEF, SESS_DRAG=false;
+function loadSessW(){
+  try{
+    var v=parseInt(localStorage.getItem('wb_sess_w'),10);
+    if(v>=SESS_W_MIN && v<=SESS_W_MAX) SESS_W=v;
+  }catch(e){}
+}
+function applySessW(){
+  document.documentElement.style.setProperty('--sess-w',SESS_W+'px');
+  // 两处把手（面板说明里 + 表头里）都刷新提示文案
+  document.querySelectorAll('.sessgrip').forEach(function(g){
+    g.setAttribute('title','左右拖动调整标题显示宽度（当前 '+SESS_W+'px），双击恢复默认');
+  });
+}
+function saveSessW(){ try{ localStorage.setItem('wb_sess_w',String(SESS_W)); }catch(e){} }
+// 动态上限：标题列最多能占多宽，才不会把表格撑出所在半栏（进而顶到「月度汇总」）。
+// 算法：半栏可视宽 − 其余各列实宽 − 首个 td 的左右 padding − 小字 ID 宽 − 2px 余量。
+// 量不出来时返回硬上限，宁可宽松也不误把用户的宽度收掉。
+// 只读布局不写 DOM，但会触发一次同步 reflow，所以只在 mousedown / resize 时调，不在 mousemove 里调。
+function sessWLimit(){
+  var tbl=document.getElementById('tblSess');
+  if(!tbl || !tbl.offsetParent) return SESS_W_MAX;        // 表格不存在或不可见
+  var sc=tbl.parentNode;
+  if(!sc || !sc.clientWidth) return SESS_W_MAX;           // 拿不到容器宽度
+  var rest=0, ths=tbl.querySelectorAll('thead th');
+  for(var i=1;i<ths.length;i++) rest+=ths[i].offsetWidth; // 除标题列外的表头实宽
+  if(!(rest>0)) return SESS_W_MAX;                        // 布局未就绪，别信这个测量
+  var td0=tbl.querySelector('td.sess'), pad=0, sid=0;
+  if(td0){
+    var cs=window.getComputedStyle?window.getComputedStyle(td0):null;
+    if(cs) pad=(parseFloat(cs.paddingLeft)||0)+(parseFloat(cs.paddingRight)||0);
+    var s0=td0.querySelector('.sid');
+    if(s0) sid=s0.offsetWidth||0;
+  }
+  var lim=sc.clientWidth-rest-pad-sid-2;
+  if(lim<SESS_W_FIT_MIN) lim=SESS_W_FIT_MIN;   // 栏太窄时保住可读性，超出部分交给横向滚动条
+  return Math.min(Math.round(lim),SESS_W_MAX);
+}
+// 把当前宽度收进「装得下」的范围（窗口变窄、栏被压扁时用）。测量失败就不动。
+function clampSessWToFit(){
+  if(SESS_DRAG) return;
+  var lim=sessWLimit();
+  if(lim<SESS_W_MAX && SESS_W>lim){ SESS_W=lim; applySessW(); saveSessW(); }
+}
+// 表头把手：mousedown 起拖 → document 上跟手 → mouseup 收尾并持久化。
+// 委托挂在 document 上，因此表格每 30 秒 innerHTML 重建、把手被换掉，都不影响拖拽。
+function initSessGrip(){
+  if(document.__gripInit) return;
+  document.__gripInit=1;
+  document.addEventListener('mousedown',function(e){
+    var g=e.target&&e.target.closest?e.target.closest('.sessgrip'):null;
+    if(!g) return;
+    if(e.preventDefault) e.preventDefault();
+    SESS_DRAG=true; g.classList.add('on');
+    var x0=e.clientX, w0=SESS_W;
+    var wMax=sessWLimit();      // 起拖时量一次「装得下」的上限，mousemove 里就不再测布局
+    function mm(ev){
+      var w=Math.max(SESS_W_MIN,Math.min(wMax,Math.round(w0+(ev.clientX-x0))));
+      if(w!==SESS_W){ SESS_W=w; applySessW(); }
+    }
+    function mu(){
+      document.removeEventListener('mousemove',mm);
+      document.removeEventListener('mouseup',mu);
+      SESS_DRAG=false;
+      document.querySelectorAll('.sessgrip').forEach(function(x){ x.classList.remove('on'); });
+      saveSessW();
+    }
+    document.addEventListener('mousemove',mm);
+    document.addEventListener('mouseup',mu);
+  });
+  document.addEventListener('dblclick',function(e){
+    var g=e.target&&e.target.closest?e.target.closest('.sessgrip'):null;
+    if(!g) return;
+    SESS_W=SESS_W_DEF; applySessW(); saveSessW();
+  });
+}
+function isHourMode(){ return RANGE==='today' || !!pickedDay(); }
+function todayDate(){
+  return DATA && DATA.days.length ? DATA.days[DATA.days.length-1].date : null;
+}
+// 自选单日：RANGE = 'day:YYYY-MM-DD'
+function pickedDay(){
+  var s=String(RANGE);
+  return s.indexOf('day:')===0 ? s.slice(4) : null;
+}
+// 自选区间：RANGE = 'rng:YYYY-MM-DD..YYYY-MM-DD'
+function pickedSpan(){
+  var s=String(RANGE);
+  if(s.indexOf('rng:')!==0) return null;
+  var p=s.slice(4).split('..');
+  return {from:p[0], to:p[1]||p[0]};
+}
+// 当前小时视图对应的日期：今日=最新一天，自选某天=所选日期
+function focusDate(){ return RANGE==='today' ? todayDate() : pickedDay(); }
+// 当前范围的人话描述，供各面板标题复用
+function rangeLabel(){
+  if(RANGE==='today') return '今日';
+  var d=pickedDay(); if(d) return d;
+  var sp=pickedSpan(); if(sp) return sp.from+' ~ '+sp.to;
+  return RANGE ? ('近 '+RANGE+' 天') : '全部';
+}
+function sliceDays(){
+  var ds=DATA.days;
+  if(RANGE==='today') return ds.length?[ds[ds.length-1]]:[];
+  var d=pickedDay();
+  if(d) return ds.filter(function(x){ return x.date===d; });
+  var sp=pickedSpan();
+  if(sp) return ds.filter(function(x){ return x.date>=sp.from && x.date<=sp.to; });
+  if(!RANGE) return ds.slice();
+  return ds.slice(-RANGE);
+}
+function sumOf(arr,k){ return arr.reduce(function(a,d){return a+(d[k]||0);},0); }
+
+// 任意一天的小时表（缺失的小时补 0，固定 24 行）
+function hoursOf(d){
+  if(!d) return [];
+  var map={};
+  (DATA.hours||[]).forEach(function(h){ if(h.date===d) map[parseInt(h.hour,10)]=h; });
+  var out=[];
+  for(var i=0;i<24;i++){
+    out.push(map[i] || {date:d, hour:(i<10?'0':'')+i, req:0, input:0, output:0,
+                        total:0, cached:0, fresh:0, credit:0});
+  }
+  return out;
+}
+function todayHours(){ return hoursOf(focusDate()); }
+function hourLabel(h){ return h+':00'; }
+
+function renderCards(){
+  var s=sliceDays(), cnt=s.length, n=cnt||1;
+  var total=sumOf(s,'total'), cached=sumOf(s,'cached'), out=sumOf(s,'output'),
+      input=sumOf(s,'input'), fresh=sumOf(s,'fresh'), req=sumOf(s,'req'),
+      credit=s.reduce(function(a,d){return a+(d.credit||0);},0);
+  var rate= input? cached/input*100 : 0;
+  var cards=[];
+  if(isHourMode()){
+    var last=s[0]||{}, cd=focusDate()||'';
+    var dl=(RANGE==='today')?'今日':'当日';
+    if(!last.date){
+      cards.push([dl+'数据', '—', (cd||'所选日期')+' 无任何请求记录']);
+    } else {
+      var idx=-1;
+      DATA.days.forEach(function(x,i){ if(x.date===cd) idx=i; });
+      var prev = idx>0 ? DATA.days[idx-1] : null;
+      var hint=fmt(last.total)+' 词元';
+      if(prev && prev.total){
+        var delta=(last.total-prev.total)/prev.total*100;
+        hint+='　'+(RANGE==='today'?'较昨日':('较 '+prev.date.slice(5)))+' '+(delta>=0?'+':'')+delta.toFixed(0)+'%';
+      }
+      cards.push([dl+'总词元', Mlabel(last.total), hint]);
+      cards.push([dl+'非缓存输入', Mlabel(last.fresh),
+        last.input?('占'+dl+'输入 '+(last.fresh/last.input*100).toFixed(1)+'%'):'']);
+      cards.push([dl+'缓存命中', Mlabel(last.cached),
+        last.input?('占'+dl+'输入 '+rate.toFixed(1)+'%'):'']);
+      cards.push([dl+'输出词元', Mlabel(last.output),
+        last.total?('占'+dl+'总词元 '+(last.output/last.total*100).toFixed(1)+'%'):'']);
+      cards.push([dl+' API 请求数', fmt(last.req), '']);
+      if(credit>0) cards.push([dl+'积分', credit.toFixed(1), '仅计量通道才计分']);
+    }
+  } else {
+    var lastD=DATA.days[DATA.days.length-1], prevD=DATA.days[DATA.days.length-2];
+    if(pickedSpan() && !cnt){
+      cards.push(['区间内数据', '—', rangeLabel()+' 无任何请求记录']);
+    } else {
+      if(pickedSpan()){
+        cards.push(['区间总词元', Mlabel(total), rangeLabel()+'　共 '+cnt+' 天']);
+      } else {
+        if(lastD) cards.push(['今日词元', Mlabel(lastD.total), fmt(lastD.total)+' 词元']);
+        if(prevD) cards.push(['昨日词元', Mlabel(prevD.total), fmt(prevD.total)+' 词元']);
+      }
+      cards.push(['范围日均', Mlabel(total/n), '按 '+n+' 天计']);
+      cards.push(['非缓存计算量', Mlabel(fresh+out),
+        '输入 '+Mlabel(fresh)+' ＋ 输出 '+Mlabel(out)]);
+      cards.push(['输出词元', Mlabel(out), '日均 '+Mlabel(out/n)]);
+      cards.push(['缓存命中率', rate.toFixed(1)+'%',
+        '命中 '+Mlabel(cached)+' ／ 输入 '+Mlabel(input)]);
+      cards.push(['API 请求数', fmt(req), '日均 '+(req/n).toFixed(0)+' 次']);
+      if(credit>0) cards.push(['积分合计', credit.toFixed(1), '仅计量通道才计分']);
+    }
+  }
+  document.getElementById('cards').innerHTML=cards.map(function(c){
+    var v=String(c[1]);
+    var unit=v.indexOf(' M')>=0?' M':'';
+    if(unit) v=v.slice(0,-2);
+    return '<div class="card"><div class="k">'+esc(c[0])+'</div>'+
+      '<div class="v">'+esc(v)+(unit?'<span class="mn">M</span>':'')+'</div>'+
+      (c[2]?'<div class="h">'+esc(c[2])+'</div>':'')+'</div>';
+  }).join('');
+}
+
+function renderChart(){
+  var hm=isHourMode();
+  var rows=hm?todayHours():sliceDays();
+  var label=function(r){ return hm?r.hour:r.date.slice(5); };
+  var max=1;
+  rows.forEach(function(d){ var t=(d.fresh||0)+(d.cached||0)+(d.output||0); if(t>max) max=t; });
+  var n=rows.length||1;
+  var box=document.getElementById('chart');
+  var cw=box.clientWidth||900;
+  var w=Math.max(cw, Math.min(n*22, 8000));
+  var padL=66, padR=16, padT=14, padB=46;
+  var H=224, iw=w-padL-padR, ih=H-padT-padB;
+  var bw=Math.min(34, iw/n*0.7);
+  var parts=[];
+  parts.push('<svg width="'+w+'" height="'+H+'" viewBox="0 0 '+w+' '+H+'">');
+  for(var g=0; g<=4; g++){
+    var y=padT+ih-ih*g/4, val=max*g/4;
+    parts.push('<line x1="'+padL+'" y1="'+y.toFixed(1)+'" x2="'+(w-padR)+'" y2="'+y.toFixed(1)+
+      '" stroke="#eceef1" stroke-width="1"/>');
+    parts.push('<text x="'+(padL-9)+'" y="'+(y+4).toFixed(1)+'" text-anchor="end" font-size="10.5" fill="#9aa1ab">'+Mchart(val)+'</text>');
+  }
+  rows.forEach(function(d,i){
+    var cx=padL+iw*(i+0.5)/n;
+    var f=d.fresh||0, c=d.cached||0, o=d.output||0;
+    var y=padT+ih;
+    var dTotal=d.total||(f+c+o);
+    var segs=[['#a9c2ff',c,'缓存命中'],['#3370ff',f,'非缓存输入'],['#00b2b2',o,'输出']];
+    segs.forEach(function(sg){
+      var h=sg[1]/max*ih; if(h<=0) return; y-=h;
+      parts.push('<rect class="bar" x="'+(cx-bw/2).toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+bw.toFixed(1)+
+        '" height="'+Math.max(1,h).toFixed(1)+'" fill="'+sg[0]+'" rx="2"/>');
+    });
+    if(dTotal>0){
+      var pt={t:(hm?hourLabel(d.hour):d.date), r:[], f:['合计', fmt(dTotal)+' 词元']};
+      segs.forEach(function(sg){
+        var share=dTotal?((sg[1]/dTotal*100).toFixed(1)+'%'):'—';
+        pt.r.push([sg[2], fmt(sg[1])+' 词元', '占比 '+share]);
+      });
+      var flat=[pt.t].concat(pt.r.map(function(x){ return x[0]+' '+x[1]+'　'+x[2]; }))
+        .concat([pt.f[0]+' '+pt.f[1]]).join('\n');
+      var hh=Math.max(dTotal/max*ih, 12);
+      parts.push('<rect x="'+(cx-bw/2).toFixed(1)+'" y="'+(padT+ih-hh).toFixed(1)+'" width="'+bw.toFixed(1)+
+        '" height="'+hh.toFixed(1)+'" fill="transparent" pointer-events="all" data-tip="'+
+        esc(flat).replace(/\n/g,'&#10;')+'" data-tipx="'+esc(JSON.stringify(pt))+'"/>');
+    }
+    if(n<=42 || i%Math.ceil(n/42)===0){
+      parts.push('<text x="'+cx.toFixed(1)+'" y="'+(padT+ih+15)+'" text-anchor="middle" font-size="10" fill="#9aa1ab" transform="rotate(-45 '+cx.toFixed(1)+' '+(padT+ih+15)+')">'+label(d)+'</text>');
+    }
+  });
+  parts.push('</svg>');
+  box.innerHTML=parts.join('');
+  var cd=focusDate(), sp=pickedSpan();
+  var noteTxt;
+  if(hm){ noteTxt=(cd||'—')+' 共 24 小时'; }
+  else if(sp){ noteTxt=sp.from.slice(5)+' ~ '+sp.to.slice(5)+'，'+rows.length+' 天'; }
+  else { noteTxt=n+' 天'; }
+  document.getElementById('chartTitle').innerHTML=
+    (hm?(RANGE==='today'?'今日分时词元构成':'当日分时词元构成'):'每日词元构成')+
+    ' <small id="chartNote">（'+noteTxt+'）</small>';
+  document.getElementById('chartNoteBox').innerHTML= hm
+    ? '每根柱是<b>该小时</b>内全部 API 请求的词元总和。缓存命中部分是每轮重发的历史上下文，量大但单价最低；<b>非缓存输入 + 输出</b>才是该小时真正新增的计算量。'
+    : '每根柱是该日<b>全部 API 请求的词元总和</b>。缓存命中部分每轮请求都要重发一遍，所以它在总量里占大头却最便宜；<b>非缓存输入 + 输出</b>才是当日真正新消耗的计算量。';
+}
+
+function renderDaily(){
+  var hm=isHourMode();
+  var rows=hm?todayHours():sliceDays().slice();
+  var defaultKey=hm?'hour':'date';
+  if(SORT.k!=='hour' && SORT.k!=='date' && !hm) {}
+  if((hm&&SORT.k==='date')||(!hm&&SORT.k==='hour')) SORT={k:defaultKey,d:hm?1:-1};
+  rows.sort(function(a,b){
+    var x=a[SORT.k], y=b[SORT.k];
+    if(typeof x==='string'){ return SORT.d*(x<y?-1:x>y?1:0); }
+    return SORT.d*((x||0)-(y||0));
+  });
+  var maxT=Math.max(1,Math.max.apply(null,rows.map(function(d){return d.total||0;})));
+  var maxRow=rows.reduce(function(a,b){ return (b.total||0)>(a.total||0)?b:a; },{total:-1});
+  var maxLabel=rows.length?(hm?hourLabel(maxRow.hour):maxRow.date):'—';
+  var tipText='条形长度 = 该行总词元 ÷ 本表最大值（'+maxLabel+'，即满格的那一行）\n'+
+    '分母只取本表，会随所选范围变化，是表内各行的横向对比，不等于占全部总量的百分比。\n'+
+    '不足 2% 的按 2% 显示。';
+  var tipAttr=esc(tipText).replace(/\n/g,'&#10;');
+  var cols=[[defaultKey,hm?'时段':'日期'],['req','请求数'],['fresh','非缓存输入'],
+            ['cached','缓存命中'],['output','输出词元'],['total','总词元'],['credit','积分']];
+  var html='<thead><tr>'+cols.map(function(c){
+    return '<th data-k="'+c[0]+'" style="cursor:pointer">'+c[1]+(SORT.k===c[0]?(SORT.d>0?' ▲':' ▼'):'')+'</th>';
+  }).join('')+'<th class="help" title="'+tipAttr+'">本表对比</th></tr></thead><tbody>';
+  rows.forEach(function(d){
+    var key=hm?hourLabel(d.hour):d.date;
+    var zero=!(d.req>0);
+    html+='<tr'+(zero?' style="color:#c8ccd2"':'')+'><td>'+key+'</td><td>'+fmt(d.req)+
+      '</td><td title="'+fmt(d.fresh)+' 词元">'+Mx(d.fresh)+'</td>'+
+      '<td title="'+fmt(d.cached)+' 词元">'+Mx(d.cached)+'</td>'+
+      '<td title="'+fmt(d.output)+' 词元">'+Mx(d.output)+'</td>'+
+      '<td title="'+fmt(d.total)+' 词元"><b>'+Mx(d.total)+'</b></td>'+
+      '<td>'+(d.credit?d.credit.toFixed(1):'—')+'</td>'+
+      '<td style="width:110px"><span class="bar-inline" style="width:'+Math.max(2,(d.total||0)/maxT*100).toFixed(1)+'%"></span></td></tr>';
+  });
+  html+='</tbody>';
+  var t=document.getElementById('tblDaily');
+  t.innerHTML=html;
+  var extra=(pickedDay()||pickedSpan()) ? (rangeLabel()+' · ') : '';
+  document.getElementById('dailyTitle').innerHTML=(hm?(RANGE==='today'?'今日分时明细':'当日分时明细'):'每日明细')+
+    ' <small>'+extra+'点击表头可排序，悬停看精确值（单位 M = 百万词元）；「本表对比」列悬停可看口径说明</small>';
+  Array.prototype.forEach.call(t.querySelectorAll('th[data-k]'),function(th){
+    th.onclick=function(){
+      var k=th.getAttribute('data-k');
+      if(SORT.k===k){ SORT.d=-SORT.d; } else { SORT.k=k; SORT.d=(k==='hour'||k==='date')?(hm?1:-1):-1; }
+      renderDaily();
+    };
+  });
+}
+
+function renderModels(){
+  var hm=isHourMode();
+  var rows, note;
+  if(hm){
+    var cd=focusDate();
+    rows=DATA.models.filter(function(m){ return m.date===cd; });
+    note='（'+(RANGE==='today'?'今日':cd)+'）';
+  } else {
+    var sd=sliceDays();
+    var lo=sd.length?sd[0].date:'9999-99-99';
+    var hi=sd.length?sd[sd.length-1].date:'0000-00-00';
+    rows=DATA.models.filter(function(m){ return m.date>=lo && m.date<=hi; });
+    note='（'+rangeLabel()+'）';
+  }
+  var by={};
+  rows.forEach(function(m){
+    var o=by[m.model]=by[m.model]||{model:m.model,req:0,fresh:0,cached:0,output:0,total:0,credit:0};
+    o.req+=m.req; o.fresh+=(m.fresh||0); o.cached+=m.cached; o.output+=m.output;
+    o.total+=m.total; o.credit+=m.credit;
+  });
+  var list=Object.keys(by).map(function(k){return by[k];}).sort(function(a,b){return b.total-a.total;});
+  var sum=list.reduce(function(a,x){return a+x.total;},0)||1;
+  var html='<thead><tr><th>模型</th><th>请求数</th><th>非缓存输入</th><th>缓存命中</th><th>输出</th><th>总词元</th><th>占比</th><th>积分</th></tr></thead><tbody>';
+  list.forEach(function(x){
+    html+='<tr><td class="mono">'+esc(x.model)+'</td><td>'+fmt(x.req)+
+      '</td><td title="'+fmt(x.fresh)+' 词元">'+Mx(x.fresh)+'</td>'+
+      '<td title="'+fmt(x.cached)+' 词元">'+Mx(x.cached)+'</td>'+
+      '<td title="'+fmt(x.output)+' 词元">'+Mx(x.output)+'</td>'+
+      '<td title="'+fmt(x.total)+' 词元"><b>'+Mx(x.total)+'</b></td>'+
+      '<td>'+(x.total/sum*100).toFixed(1)+'%</td>'+
+      '<td>'+(x.credit?x.credit.toFixed(1):'—')+'</td></tr>';
+  });
+  html+='</tbody>';
+  document.getElementById('tblModel').innerHTML=html;
+  document.getElementById('mNote').textContent=note;
+}
+
+function renderSessions(){
+  if(SESS_DRAG) return;   // 拖动列宽时别重建表头，否则把手会闪断
+  var html='<thead><tr><th class="sessh">会话标题<span class="sessgrip"></span></th>'+
+    '<th>请求数</th><th>总词元</th><th>输出</th><th>积分</th></tr></thead><tbody>';
+  DATA.sessions.slice(0,20).forEach(function(s){
+    var sid=String(s.session==null?'':s.session);
+    var short=sid.slice(0,8);
+    var full=s.title||'';
+    // 悬停给全量信息：完整标题 + 工作目录 + 完整会话 ID（同名会话靠 ID 区分）
+    var tipv=(full||'(无标题)')+(s.cwd?'\n'+s.cwd:'')+'\n'+sid;
+    // 标题不再在 JS 里截字符：整串交给 CSS，由 --sess-w 决定露出多少、自动补省略号
+    html+='<tr><td class="sess" title="'+esc(tipv)+'">'+
+      '<span class="st">'+esc(full||short)+'</span>'+
+      '<span class="sid mono">'+esc(short)+'</span></td>'+
+      '<td>'+fmt(s.req)+
+      '</td><td title="'+fmt(s.total)+' 词元">'+Mx(s.total)+'</td>'+
+      '<td title="'+fmt(s.output)+' 词元">'+Mx(s.output)+'</td>'+
+      '<td>'+(s.credit?s.credit.toFixed(1):'—')+'</td></tr>';
+  });
+  html+='</tbody>';
+  document.getElementById('tblSess').innerHTML=html;
+  applySessW();
+  clampSessWToFit();   // 表格刚渲染完、布局可测：把宽度收进装得下的范围
+}
+
+function renderMonths(){
+  var html='<thead><tr><th>月份</th><th>请求数</th><th>非缓存输入</th><th>缓存命中</th><th>输出</th><th>总词元</th><th>积分</th></tr></thead><tbody>';
+  DATA.months.forEach(function(m){
+    var fresh=Math.max(0,m.input-m.cached);
+    html+='<tr><td>'+m.month+'</td><td>'+fmt(m.req)+
+      '</td><td title="'+fmt(fresh)+' 词元">'+Mx(fresh)+'</td>'+
+      '<td title="'+fmt(m.cached)+' 词元">'+Mx(m.cached)+'</td>'+
+      '<td title="'+fmt(m.output)+' 词元">'+Mx(m.output)+'</td>'+
+      '<td title="'+fmt(m.total)+' 词元"><b>'+Mx(m.total)+'</b></td>'+
+      '<td>'+(m.credit?m.credit.toFixed(1):'—')+'</td></tr>';
+  });
+  html+='</tbody>';
+  document.getElementById('tblMonth').innerHTML=html;
+}
+
+function renderAll(){
+  renderCards(); renderChart(); renderDaily(); renderModels(); renderSessions(); renderMonths();
+}
+
+var PAGE_VER=null;
+function fmtVer(ts){
+  if(!ts) return '';
+  var d=new Date(ts*1000), p=function(n){return (n<10?'0':'')+n;};
+  return '　页面版本 '+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());
+}
+function checkPageVer(ts){
+  var el=document.getElementById('ver');
+  if(!ts){ if(el) el.textContent=''; return; }
+  if(PAGE_VER===null){ PAGE_VER=ts; if(el) el.textContent=fmtVer(ts); return; }
+  if(ts!==PAGE_VER){
+    if(el) el.textContent=fmtVer(PAGE_VER)+'　检测到代码已更新，正在自动重载…';
+    setTimeout(function(){ location.reload(); }, 700);
+  }
+}
+
+function load(force){
+  fetch(BASE+'api/data'+(force?'?force=1':'')).then(function(r){
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    return r.json();
+  }).then(function(j){
+    DATA=j;
+    checkPageVer(j.htmlMtime);
+    var st=document.getElementById('status'), dot=document.getElementById('dot');
+    dot.className='dot';
+    st.textContent='数据更新于 '+j.generatedAt.slice(11,19)+'　每 '+j.refreshSec+' 秒自动刷新';
+    document.getElementById('span').textContent=(j.span.from||'').slice(0,10)+' ~ '+(j.span.to||'').slice(0,10);
+    document.getElementById('recn').textContent=fmt(j.recordCount);
+    document.getElementById('err').innerHTML = j.scanError
+      ? '<div class="errbox">扫描告警：'+esc(j.scanError)+'</div>' : '';
+    initPickers();
+    syncBtns();
+    renderAll();
+  }).catch(function(e){
+    document.getElementById('dot').className='dot err';
+    document.getElementById('status').textContent='读取失败：'+e.message;
+  });
+}
+
+// 预设按钮（今日 / 近 N 天 / 全部）与两个自选按钮，都通过 setRange 收口
+function setRange(v){
+  RANGE=v;
+  var hm=isHourMode();
+  SORT={k:hm?'hour':'date', d:hm?1:-1};
+  closePops();
+  syncBtns();
+  renderAll();
+}
+document.querySelectorAll('button[data-r]').forEach(function(b){
+  b.onclick=function(){
+    var v=b.getAttribute('data-r');
+    setRange((v==='today') ? 'today' : parseInt(v,10));
+  };
+});
+document.getElementById('reload').onclick=function(){ load(true); };
+
+// 按钮高亮与自选按钮文案都以脚本里的 RANGE 为准，避免 HTML 与默认值不一致
+function syncBtns(){
+  document.querySelectorAll('button[data-r]').forEach(function(x){
+    var v=(RANGE==='today')?'today':String(RANGE);
+    if(x.getAttribute('data-r')===v) x.classList.add('on'); else x.classList.remove('on');
+  });
+  var bd=document.getElementById('btnDay'), br=document.getElementById('btnRng');
+  if(!bd||!br) return;
+  var pd=pickedDay(), sp=pickedSpan();
+  bd.classList.toggle('on', !!pd);
+  br.classList.toggle('on', !!sp);
+  bd.textContent = pd ? (pd.slice(5)+' ▾') : '自选某天 ▾';
+  br.textContent = sp ? (sp.from.slice(5)+'~'+sp.to.slice(5)+' ▾') : '自选区间 ▾';
+}
+
+function closePops(){
+  document.querySelectorAll('.pop').forEach(function(p){ p.classList.remove('open'); });
+}
+function openPop(id){
+  var p=document.getElementById(id);
+  var was=p.classList.contains('open');
+  closePops();
+  if(!was) p.classList.add('open');
+}
+function flashMsg(id,txt){
+  var el=document.getElementById(id);
+  if(el) el.textContent=txt||'';
+}
+// 日历输入框的上下限锁定在数据覆盖范围内，并给出合理初值（只填空值，不覆盖用户已改的）
+function initPickers(){
+  if(!DATA) return;
+  var from=((DATA.span&&DATA.span.from)||'').slice(0,10);
+  var to=((DATA.span&&DATA.span.to)||'').slice(0,10);
+  ['inpDay','inpFrom','inpTo'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(!el) return;
+    if(from) el.min=from;
+    if(to) el.max=to;
+  });
+  var dEl=document.getElementById('inpDay');
+  if(dEl && !dEl.value) dEl.value=focusDate()||to;
+  var fEl=document.getElementById('inpFrom'), tEl=document.getElementById('inpTo');
+  var sd=sliceDays();
+  if(fEl && !fEl.value) fEl.value=sd.length?sd[0].date:from;
+  if(tEl && !tEl.value) tEl.value=sd.length?sd[sd.length-1].date:to;
+}
+
+document.getElementById('btnDay').onclick=function(e){
+  if(e&&e.stopPropagation) e.stopPropagation();
+  flashMsg('msgDay','');
+  openPop('popDay');
+};
+document.getElementById('btnRng').onclick=function(e){
+  if(e&&e.stopPropagation) e.stopPropagation();
+  flashMsg('msgRng','');
+  openPop('popRng');
+};
+document.querySelectorAll('.pop').forEach(function(p){
+  p.onclick=function(e){ if(e&&e.stopPropagation) e.stopPropagation(); };
+});
+document.querySelectorAll('button[data-close]').forEach(function(b){
+  b.onclick=function(e){ if(e&&e.stopPropagation) e.stopPropagation(); closePops(); };
+});
+document.addEventListener('click',function(){ closePops(); });
+
+document.getElementById('okDay').onclick=function(){
+  var v=document.getElementById('inpDay').value;
+  if(!v){ flashMsg('msgDay','请先在日历里选一个日期'); return; }
+  setRange('day:'+v);
+};
+document.getElementById('okRng').onclick=function(){
+  var a=document.getElementById('inpFrom').value;
+  var b=document.getElementById('inpTo').value;
+  if(!a && !b){ flashMsg('msgRng','请至少选择一个日期'); return; }
+  if(!a) a=b;
+  if(!b) b=a;
+  if(a>b){ var t=a; a=b; b=t; }
+  setRange('rng:'+a+'..'+b);
+};
+syncBtns();
+
+// data-tipx 存结构化三列（JSON），渲染成网格让「标签左对齐 / 数值右对齐 / 占比左对齐」
+function tipHTML(el){
+  var raw=el.getAttribute('data-tipx');
+  if(!raw) return null;
+  var p=null;
+  try{ p=JSON.parse(raw); }catch(err){ return null; }
+  if(!p||!p.r||!p.r.length) return null;
+  var h='<div class="tt">';
+  if(p.t) h+='<div class="tt-h">'+esc(p.t)+'</div>';
+  p.r.forEach(function(r){
+    h+='<span>'+esc(r[0])+'</span><span class="tt-v">'+esc(r[1])+'</span><span>'+esc(r[2])+'</span>';
+  });
+  if(p.f) h+='<span class="tt-f">'+esc(p.f[0])+'</span><span class="tt-v">'+esc(p.f[1])+'</span><span></span>';
+  return h+'</div>';
+}
+
+document.addEventListener('mousemove',function(e){
+  var el=e.target.closest?e.target.closest('[data-tip],[data-tipx]'):null;
+  if(!el){ if(tip.style.display!=='none') tip.style.display='none'; return; }
+  var h=tipHTML(el);
+  if(h){
+    if(tip.innerHTML!==h) tip.innerHTML=h;
+  } else {
+    var txt=el.getAttribute('data-tip');
+    if(!txt){ if(tip.style.display!=='none') tip.style.display='none'; return; }
+    if(tip.textContent!==txt) tip.textContent=txt;
+  }
+  if(tip.style.display!=='block') tip.style.display='block';
+  var tw=tip.offsetWidth, th=tip.offsetHeight;
+  var lx=e.clientX, ly=e.clientY-10;
+  if(lx-tw/2<6) lx=tw/2+6;
+  if(lx+tw/2>window.innerWidth-6) lx=window.innerWidth-6-tw/2;
+  if(ly-th<6) ly=e.clientY+22;
+  tip.style.left=lx+'px'; tip.style.top=ly+'px';
+});
+
+// 会话标题列宽：先从 localStorage 恢复，再挂上表头把手的拖拽（表格还没渲染也没关系，
+// 委托挂在 table 元素上，innerHTML 重建不影响）
+loadSessW(); applySessW(); initSessGrip();
+
+load(false);
+setInterval(function(){ load(false); }, 30000);
+var rt=null;
+window.addEventListener('resize',function(){
+  if(!DATA) return;
+  clampSessWToFit();   // 窗口变窄时同步把列宽收进新上限，不留超宽残留
+  clearTimeout(rt);
+  rt=setTimeout(function(){ renderChart(); }, 160);
+});
+</script></body></html>
