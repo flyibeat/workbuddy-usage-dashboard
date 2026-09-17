@@ -19,6 +19,14 @@ import subprocess
 import sys
 import time
 
+# 英文版 Windows 的控制台代码页是 cp1252，直接 print 中文会 UnicodeEncodeError 崩掉
+# （GitHub Actions 的 windows runner 就是这种情况）。统一切到 UTF-8，编不出来就替换。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRV = os.path.dirname(HERE)
 ENTRY = os.path.join(SRV, 'usage_server.py')

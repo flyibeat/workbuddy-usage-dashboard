@@ -16,6 +16,11 @@ jobs:
   build:
     name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    env:
+      # Windows runner 的控制台代码页是 cp1252，脚本里的中文日志会 UnicodeEncodeError。
+      # 脚本自身已做编码兜底，这里再加一道保险。
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '1'
     strategy:
       # 一个平台失败不影响其它平台出产物
       fail-fast: false

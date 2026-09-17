@@ -25,6 +25,17 @@ import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
+# ---- 控制台编码兜底 ---------------------------------------------------------
+#
+# 本程序所有提示都是中文。Windows 英文版控制台的代码页是 cp1252，直接 print 中文会
+# UnicodeEncodeError 崩掉（GitHub Actions 的 windows runner 正是这种情况）。
+# 统一切到 UTF-8；实在编不出来就退化为替换字符 —— 绝不能因为「打印一行日志」而退出。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 # ---- 数据根定位 -------------------------------------------------------------
 #
 # 数据固定放在「数据根」下：<数据根>/projects/*/*.jsonl 与 <数据根>/workbuddy.db，
