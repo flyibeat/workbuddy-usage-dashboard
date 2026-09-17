@@ -127,9 +127,9 @@ python packaging/build_exe.py
 约 1~2 分钟后任务变绿，进入这次运行页面，最下方 **Artifacts** 区域可以下载：
 
 ```
-wb-usage-windows-latest   →  wb-usage.exe
-wb-usage-ubuntu-latest    →  wb-usage
-wb-usage-macos-latest     →  wb-usage
+build-windows-latest   →  wb-usage.exe
+build-ubuntu-latest    →  wb-usage
+build-macos-latest     →  wb-usage
 ```
 
 下载下来是个 zip，解压即得可执行文件。**Artifact 默认保留 90 天。**
@@ -141,7 +141,15 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-workflow 会自动构建三个平台，并创建一个 Release，把三份产物作为附件挂上去。适合发版本给别人用。
+workflow 会自动构建三个平台，并在全部构建成功**之后**创建一个 Release，附上三份重命名好的产物：
+
+```
+wb-usage-windows-x64.exe
+wb-usage-linux-x64
+wb-usage-macos-arm64
+```
+
+适合发版本给别人用。（为什么不在各平台的 job 里直接传 Release：Linux 与 macOS 的产物默认同名 `wb-usage`，并发上传会撞名，也会抢写同一个 Release —— 所以把发版单独拆成一个 job。）
 
 ### CI 里做了什么
 
@@ -151,8 +159,8 @@ workflow 会自动构建三个平台，并创建一个 Release，把三份产物
 | `pip install pyinstaller` | 装打包工具 |
 | `python packaging/build_exe.py` | 出单文件产物（Windows 是 `.exe`，其余无后缀） |
 | 冒烟测试 | 后台起进程 → 轮询 `/api/health` → 打印结果 → 杀进程。**CI 机器上没有 WorkBuddy 数据，`records=0` 是正常的**；这一步真正的作用是确认二进制能起来、端口能绑、接口能应答（即没有"打包后运行期炸"） |
-| `upload-artifact` | 上传产物，找不到文件会直接报错，不会静默通过 |
-| `softprops/action-gh-release` | 仅当 ref 是 tag 时执行，附产物到 Release |
+| `upload-artifact` | 上传产物（名字 `build-<os>`），找不到文件会直接报错，不会静默通过 |
+| 独立的 `release` job | 仅当 ref 是 tag 时运行：等三个平台**全部**构建完 → 下载 artifact → 重命名成平台专属文件名 → 一次性创建 Release |
 
 > 无论用哪种方式，**产物跑起来后请以 `/api/health` 的 `records > 0` 为准**判断数据是否正常，而不是以进程状态为准。
 

@@ -60,26 +60,54 @@ jobs:
           echo "--- 文件清单 ---"
           ls -l dist/
 
-      - name: Upload artifact
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wb-usage-${{ matrix.os }}
+          name: build-${{ matrix.os }}
           path: dist/wb-usage*
           if-no-files-found: error
 
-      - name: Attach to Release
-        if: startsWith(github.ref, 'refs/tags/')
+  # 单独一个 job 汇总发版：三个平台并发往同一个 Release 上传会撞名（Linux 与 macOS
+  # 的产物都叫 wb-usage），也会互相抢写同一个 Release。这里改成「先全部构建完，
+  # 再一次性重命名后上传」，顺便消除竞态。
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare platform-specific assets
+        shell: bash
+        run: |
+          set -e
+          mkdir -p release
+          cp "artifacts/build-windows-latest/wb-usage.exe" release/wb-usage-windows-x64.exe
+          cp "artifacts/build-ubuntu-latest/wb-usage"      release/wb-usage-linux-x64
+          cp "artifacts/build-macos-latest/wb-usage"       release/wb-usage-macos-arm64
+          chmod +x release/wb-usage-linux-x64 release/wb-usage-macos-arm64
+          echo "--- release assets ---"
+          ls -l release/
+
+      - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/wb-usage*
+          files: release/*
           generate_release_notes: true
           body: |
             单文件构建产物，零运行时依赖，拷走即用。
 
-            | 平台 | 文件 | 说明 |
+            | 平台 | 文件 | 用法 |
             |---|---|---|
-            | Windows | `wb-usage.exe` | 双击运行；`--open` 会自动开浏览器 |
-            | macOS | `wb-usage` | **未签名**，首次运行需 `chmod +x wb-usage`，若被 Gatekeeper 拦下：右键 → 打开 |
-            | Linux | `wb-usage` | `chmod +x wb-usage && ./wb-usage` |
+            | Windows x64 | `wb-usage-windows-x64.exe` | 双击运行；`--open` 会自动开浏览器 |
+            | Linux x64 | `wb-usage-linux-x64` | `chmod +x wb-usage-linux-x64 && ./wb-usage-linux-x64` |
+            | macOS (Apple Silicon) | `wb-usage-macos-arm64` | `chmod +x wb-usage-macos-arm64 && ./wb-usage-macos-arm64`。**未签名**，若被 Gatekeeper 拦下：右键 → 打开 |
 
             运行前请确认本机已安装 WorkBuddy 且 `~/.workbuddy/projects/` 下有会话数据。
+            启动后浏览器打开 <http://127.0.0.1:8791>。
+
+            > 担心数据没读到？看 `/api/health` 的 `records` 是否大于 0，而不是看进程状态。
