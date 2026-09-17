@@ -8,6 +8,13 @@
     python usage_server.py
     浏览器打开 http://127.0.0.1:8791
 
+命令行：
+    --port 8800   临时换端口（等价于环境变量 WB_USAGE_PORT）
+    --home <路径> 指定数据根（等价于环境变量 WB_USAGE_HOME）
+    --rebuild     忽略扫描缓存，全量重扫一次
+    --open        启动后自动打开浏览器
+    --version     只打印本程序版本号后退出
+
 特性：
     * 启动全量扫描一次，之后每 REFRESH_SEC 秒做增量扫描（按 mtime+size 跳过未变文件）
     * 扫描缓存落盘，重启秒级恢复
@@ -35,6 +42,18 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding='utf-8', errors='replace')
     except Exception:
         pass
+
+# ---- 版本 -------------------------------------------------------------------
+#
+# 前后端各自计版本，互不牵连：
+#   * 后端版本 = 本常量（usage_server.py）
+#   * 前端版本 = dashboard.html 里的 FE_VER
+# 只改前端就只升 FE_VER，只改后端就只升 BE_VER，两边都改就都升。
+# 页面页头会同时显示两者，一眼看出当前跑的是哪个组合。
+#
+# 「改了代码就改这里」是唯一的版本来源 —— 不要靠外部变量或 git 标签注入，
+# 否则代码与版本号会各说各话。WB_VERSION 仅作临时覆盖（验证、临时构建）用。
+BE_VER = os.environ.get('WB_VERSION', '').strip() or 'v1.0.1'
 
 # ---- 数据根定位 -------------------------------------------------------------
 #
@@ -615,6 +634,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps({'generatedAt': '', 'days': [], 'months': [],
                                             'models': [], 'sessions': [], 'hours': [],
                                             'recordCount': 0, 'refreshSec': REFRESH_SEC,
+                                            'serverVersion': BE_VER,
                                             'scanError': err or '首次扫描进行中，请稍后刷新'},
                                            ensure_ascii=False), 'application/json; charset=utf-8')
                 return
@@ -623,6 +643,8 @@ class Handler(BaseHTTPRequestHandler):
             out['building'] = busy
             out['scanError'] = err
             out['htmlMtime'] = html_mtime()
+            # 后端版本：前端页头据此显示「服务版本」，与自身的 FE_VER 并列
+            out['serverVersion'] = BE_VER
             self._send(200, json.dumps(out, ensure_ascii=False), 'application/json; charset=utf-8')
             return
         if path == '/api/health':
@@ -630,6 +652,7 @@ class Handler(BaseHTTPRequestHandler):
                 st = {'records': _STATE['records'], 'files': _STATE['files'],
                       'builtAt': _STATE['built_at'], 'error': _STATE['error'],
                       'scanSeconds': _STATE['scan_seconds'], 'building': _STATE['building'],
+                      'version': BE_VER,
                       'dataRoot': WB, 'dataRootSource': WB_SOURCE}
             self._send(200, json.dumps(st, ensure_ascii=False), 'application/json; charset=utf-8')
             return
@@ -650,6 +673,10 @@ def _pause_if_interactive():
 
 def main():
     global PORT
+    # --version：只报版本号就退出，不扫描数据、不绑端口
+    if '--version' in sys.argv or '-V' in sys.argv:
+        print('wb-usage %s' % BE_VER)
+        return
     # 命令行可覆盖端口，方便打包后双击临时换口：wb-usage.exe --port 8800
     if '--port' in sys.argv:
         try:
@@ -657,7 +684,7 @@ def main():
         except Exception:
             log('--port 参数无效，沿用 %d' % PORT)
     frozen = getattr(sys, 'frozen', False)
-    log('启动中，端口 %s:%d，数据源 %s' % (BIND, PORT, PROJECTS))
+    log('启动中，版本 %s，端口 %s:%d，数据源 %s' % (BE_VER, BIND, PORT, PROJECTS))
     log('数据根判定：%s（来源：%s）' % (WB, WB_SOURCE))
     if frozen:
         log('程序目录 %s ｜ 资源目录 %s' % (APPDIR, RESDIR))
@@ -675,6 +702,7 @@ def main():
     if frozen:
         print('')
         print('  WorkBuddy 用量看板已启动')
+        print('  版本：%s' % BE_VER)
         print('  浏览器打开：%s' % url)
         print('  数据根：%s' % WB)
         print('  关闭本窗口即停止服务；缓存与日志都写在同目录下。')

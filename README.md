@@ -99,14 +99,39 @@ python packaging/build_exe.py
 | `--home PATH` | 临时指定数据目录，等价于 `WB_USAGE_HOME` |
 | `--open` | 启动后自动打开浏览器（后台常驻时不要加） |
 | `--rebuild` | 忽略缓存，强制全量重扫 |
+| `--version` | 只打印版本号后退出 |
+
+## 版本号
+
+**前后端各自计版本，互不牵连。**
+
+| 组件 | 版本号写在哪 | 什么时候升它 |
+|---|---|---|
+| 前端（看板页面） | `dashboard.html` 里的 `var FE_VER='v1.0.1';` | 只改了 `dashboard.html` |
+| 后端（数据服务） | `usage_server.py` 里的 `BE_VER = ... or 'v1.0.1'` | 只改了 `usage_server.py` |
+| 两边都改了 | 两个都升 | — |
+
+为什么分开计：`dashboard.html` 是一个可以**单独热替换**的独立文件（程序目录下放一份就覆盖内嵌的那份，改完存盘即生效），它可以独立于后端演进。用一个版本号捆住两者，只会出现「前端改了但版本没动」或「为了升前端版本不得不动后端」这类别扭事。
+
+页面页头会同时显示两者，一眼看出当前跑的是哪个组合：
+
+```
+页面版本 v1.0.1 ｜ 服务版本 v1.0.1
+```
+
+- **前端版本**由页面自己携带（`FE_VER`），因为它就是那个文件的一部分
+- **后端版本**经 `GET /api/data` 的 `serverVersion` 字段送到页面
+- `WB_VERSION` 环境变量可临时覆盖后端版本，**仅供验证/临时构建**，日常不要设 —— 版本号跟着代码走才不会各说各话
+
+发布用的 git 标签与版本号的关系：一个标签无法同时等于两个版本号，所以 CI 的判定标准是「**标签至少等于其中一个**」。一个都对不上会在 Actions 里打一条 warning（不拦发布），提示你可能忘了升版本号。
 
 ## HTTP 接口
 
 | 路径 | 说明 |
 |---|---|
 | `GET /` | 看板页面。优先用程序目录下的 `dashboard.html`，没有则用内嵌副本 |
-| `GET /api/data` | 完整聚合数据（`days` / `months` / `models` / `sessions` / `hours` / `recordCount` / `source`） |
-| `GET /api/health` | 运行状态（`records` / `files` / `error` / `scanSeconds` / `dataRoot` / `dataRootSource` / `building`） |
+| `GET /api/data` | 完整聚合数据（`days` / `months` / `models` / `sessions` / `hours` / `recordCount` / `source` / `htmlMtime` / `serverVersion`） |
+| `GET /api/health` | 运行状态（`records` / `files` / `error` / `scanSeconds` / `dataRoot` / `dataRootSource` / `building` / `version`） |
 
 **没有内置鉴权。** 安全性依赖默认只绑 `127.0.0.1`。若要对外提供，请在前面套一层带鉴权的反向代理。
 
@@ -136,9 +161,11 @@ build-macos-latest     →  wb-usage
 
 ### 方式二：打标签，自动发 Release
 
+先按上文「版本号」一节升好对应组件的版本号，再打标签：
+
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.0.1
+git push origin v1.0.1
 ```
 
 workflow 会自动构建三个平台，并在全部构建成功**之后**创建一个 Release，附上三份重命名好的产物：
@@ -160,6 +187,7 @@ wb-usage-macos-arm64
 | `python packaging/build_exe.py` | 出单文件产物（Windows 是 `.exe`，其余无后缀） |
 | 冒烟测试 | 后台起进程 → 轮询 `/api/health` → 打印结果 → 杀进程。**CI 机器上没有 WorkBuddy 数据，`records=0` 是正常的**；这一步真正的作用是确认二进制能起来、端口能绑、接口能应答（即没有"打包后运行期炸"） |
 | `upload-artifact` | 上传产物（名字 `build-<os>`），找不到文件会直接报错，不会静默通过 |
+| `packaging/check_version.py` | 在 `release` job 里校验标签与 `FE_VER` / `BE_VER` 是否对得上，对不上打 warning（不拦发布） |
 | 独立的 `release` job | 仅当 ref 是 tag 时运行：等三个平台**全部**构建完 → 下载 artifact → 重命名成平台专属文件名 → 一次性创建 Release |
 
 > 无论用哪种方式，**产物跑起来后请以 `/api/health` 的 `records > 0` 为准**判断数据是否正常，而不是以进程状态为准。

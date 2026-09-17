@@ -77,6 +77,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - uses: actions/checkout@v4
+
+      # 前后端各自计版本（前端 FE_VER / 后端 BE_VER），一个标签不可能同时等于两者，
+      # 所以判定标准是「至少等于其中一个」。一个都对不上 = 打了标签却忘了升版本号。
+      # 默认只警告不拦发布 —— 发版不该因为一句提醒就卡住。
+      - name: 校验标签与前后端版本号
+        run: python3 packaging/check_version.py "$GITHUB_REF_NAME"
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts

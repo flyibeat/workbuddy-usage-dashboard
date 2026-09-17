@@ -198,6 +198,9 @@ td .mu{font-size:11px;font-weight:500;color:var(--tx2);margin-left:2px}
 <script>
 var DATA=null, RANGE=7, SORT={k:'date',d:-1}, LAST_RANGE=null;
 var BASE=location.pathname.replace(/[^\/]*$/,'');
+// 前端版本号：改了这个文件就改这一行。后端版本号在 usage_server.py 的 BE_VER，
+// 由 /api/data 带过来，页头会同时显示两者（前后端各自计版本，互不牵连）。
+var FE_VER='v1.0.1';
 var tip=document.getElementById('tip');
 
 function fmt(n){ n=Number(n||0); return n.toLocaleString('en-US'); }
@@ -614,18 +617,25 @@ function renderAll(){
   renderCards(); renderChart(); renderDaily(); renderModels(); renderSessions(); renderMonths();
 }
 
-var PAGE_VER=null;
-function fmtVer(ts){
-  if(!ts) return '';
-  var d=new Date(ts*1000), p=function(n){return (n<10?'0':'')+n;};
-  return '　页面版本 '+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());
+// 版本显示与「代码更新自动重载」是两件不同的事，故意分开：
+//   * 版本号：前端取自本文件的 FE_VER，后端取自 /api/data 的 serverVersion
+//   * 自动重载：仍靠 htmlMtime（HTML 文件自身的 mtime）。版本号没变但文件改过
+//     时这个通道照样要能触发重载，所以两者不能合并成同一个字段
+var HTML_MTIME=null, SRV_VER='';
+function verText(){
+  return '　页面版本 '+FE_VER+(SRV_VER?' ｜ 服务版本 '+SRV_VER:'');
 }
-function checkPageVer(ts){
+function renderVer(){
   var el=document.getElementById('ver');
-  if(!ts){ if(el) el.textContent=''; return; }
-  if(PAGE_VER===null){ PAGE_VER=ts; if(el) el.textContent=fmtVer(ts); return; }
-  if(ts!==PAGE_VER){
-    if(el) el.textContent=fmtVer(PAGE_VER)+'　检测到代码已更新，正在自动重载…';
+  if(el) el.textContent=verText();
+}
+function checkPageVer(mtime, srvVer){
+  if(srvVer && srvVer!==SRV_VER){ SRV_VER=srvVer; renderVer(); }
+  if(!mtime) return;
+  if(HTML_MTIME===null){ HTML_MTIME=mtime; renderVer(); return; }
+  if(mtime!==HTML_MTIME){
+    var el=document.getElementById('ver');
+    if(el) el.textContent=verText()+'　检测到代码已更新，正在自动重载…';
     setTimeout(function(){ location.reload(); }, 700);
   }
 }
@@ -636,7 +646,7 @@ function load(force){
     return r.json();
   }).then(function(j){
     DATA=j;
-    checkPageVer(j.htmlMtime);
+    checkPageVer(j.htmlMtime, j.serverVersion);
     var st=document.getElementById('status'), dot=document.getElementById('dot');
     dot.className='dot';
     st.textContent='数据更新于 '+j.generatedAt.slice(11,19)+'　每 '+j.refreshSec+' 秒自动刷新';
