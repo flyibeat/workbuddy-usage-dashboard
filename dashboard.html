@@ -188,7 +188,7 @@ td .mu{font-size:11px;font-weight:500;color:var(--tx2);margin-left:2px}
     <div class="scroll"><table id="tblSess"></table></div>
   </div>
   <div class="panel">
-    <div class="ph"><h2>月度汇总</h2></div>
+    <div class="ph"><h2>月度汇总 <small>点击表头可排序（默认大月在上，小月在下）；排序方向会被记住</small></h2></div>
     <div class="scroll"><table id="tblMonth"></table></div>
   </div>
 </div>
@@ -196,16 +196,34 @@ td .mu{font-size:11px;font-weight:500;color:var(--tx2);margin-left:2px}
 </div>
 <div class="tip" id="tip"></div>
 <script>
-var DATA=null, RANGE=7, SORT={k:'date',d:-1}, LAST_RANGE=null;
+// 排序记忆（2026-09-17 加）：明细表与月度表各存一份 localStorage，值形如 {"k":"total","d":-1}。
+// 刷新页面时由 loadSort() 恢复用户上次的列与方向。
+// 写入共三处，缺一处就会出现「刷新后的排序 ≠ 刷新前屏上的排序」：
+//   ① 点击表头  ② setRange() 的重置（它会退回默认列，得跟着落盘）  ③ renderDaily() 里 key 不适用时的自动纠正
+var DAILY_SORT_KEY='wb_sort_daily', MONTH_SORT_KEY='wb_sort_month';
+// 排序键白名单：记忆可能是旧版本留下的列名（列改过名/删过列），不校验会把表排成乱序
+var DAILY_SORT_KEYS=['date','hour','req','fresh','cached','output','total','credit'];
+var MONTH_SORT_KEYS=['month','req','fresh','cached','output','total','credit'];
+function loadSort(lsKey,def,valid){
+  try{
+    var o=JSON.parse(localStorage.getItem(lsKey)||'null');
+    if(o && valid.indexOf(o.k)>=0 && (o.d===1||o.d===-1)) return {k:o.k,d:o.d};
+  }catch(e){}                    // localStorage 被禁 / 内容不是 JSON：静默退回默认
+  return {k:def.k,d:def.d};
+}
+function saveSort(lsKey,o){ try{ localStorage.setItem(lsKey,JSON.stringify({k:o.k,d:o.d})); }catch(e){} }
+var DATA=null, RANGE=7, LAST_RANGE=null;
+// 明细表默认日期降序（最新在前）；月度表默认月份降序（大月在上、小月在下）。
+// 有记忆时两者都被 loadSort() 覆盖。
+var SORT=loadSort(DAILY_SORT_KEY,{k:'date',d:-1},DAILY_SORT_KEYS);
 // 月度汇总自带一套排序状态，故意不与明细表的 SORT 共享：月度表是全量月份、不随范围
 // 变化，而明细表的 SORT 会在切换范围时被 setRange() 重置。共用会让「切范围时月度
 // 表的排序也被顺手重置」，两件事没有关联。
-// 默认 k='month', d=1（月份升序，与后端返回顺序一致，即改动前的显示效果）。
-var MSORT={k:'month',d:1};
+var MSORT=loadSort(MONTH_SORT_KEY,{k:'month',d:-1},MONTH_SORT_KEYS);
 var BASE=location.pathname.replace(/[^\/]*$/,'');
 // 前端版本号：改了这个文件就改这一行。后端版本号在 usage_server.py 的 BE_VER，
 // 由 /api/data 带过来，页头会同时显示两者（前后端各自计版本，互不牵连）。
-var FE_VER='v1.0.2';
+var FE_VER='v1.0.3';
 var tip=document.getElementById('tip');
 
 function fmt(n){ n=Number(n||0); return n.toLocaleString('en-US'); }
@@ -497,7 +515,7 @@ function renderDaily(){
   var rows=hm?todayHours():sliceDays().slice();
   var defaultKey=hm?'hour':'date';
   if(SORT.k!=='hour' && SORT.k!=='date' && !hm) {}
-  if((hm&&SORT.k==='date')||(!hm&&SORT.k==='hour')) SORT={k:defaultKey,d:hm?1:-1};
+  if((hm&&SORT.k==='date')||(!hm&&SORT.k==='hour')){ SORT={k:defaultKey,d:hm?1:-1}; saveSort(DAILY_SORT_KEY,SORT); }
   rows.sort(function(a,b){
     var x=a[SORT.k], y=b[SORT.k];
     if(typeof x==='string'){ return SORT.d*(x<y?-1:x>y?1:0); }
@@ -536,6 +554,7 @@ function renderDaily(){
     th.onclick=function(){
       var k=th.getAttribute('data-k');
       if(SORT.k===k){ SORT.d=-SORT.d; } else { SORT.k=k; SORT.d=(k==='hour'||k==='date')?(hm?1:-1):-1; }
+      saveSort(DAILY_SORT_KEY,SORT);   // 记住这次点击：刷新后仍是这个列与方向
       renderDaily();
     };
   });
@@ -645,7 +664,8 @@ function renderMonths(){
     th.onclick=function(){
       var k=th.getAttribute('data-k');
       if(MSORT.k===k){ MSORT.d=-MSORT.d; }
-      else { MSORT.k=k; MSORT.d=(k==='month')?1:-1; }   // 月份按时间先后读最自然，数值列默认从大到小
+      else { MSORT.k=k; MSORT.d=-1; }   // 换新列一律先降序：数值列从大到小；月份即大月在上、小月在下
+      saveSort(MONTH_SORT_KEY,MSORT);   // 记住这次点击：刷新后仍是这个列与方向
       renderMonths();
     };
   });
@@ -706,6 +726,7 @@ function setRange(v){
   RANGE=v;
   var hm=isHourMode();
   SORT={k:hm?'hour':'date', d:hm?1:-1};
+  saveSort(DAILY_SORT_KEY,SORT);   // 重置也写记忆：保证「刷新后恢复的排序 = 此刻屏上的排序」
   closePops();
   syncBtns();
   renderAll();
