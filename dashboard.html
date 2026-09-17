@@ -197,10 +197,15 @@ td .mu{font-size:11px;font-weight:500;color:var(--tx2);margin-left:2px}
 <div class="tip" id="tip"></div>
 <script>
 var DATA=null, RANGE=7, SORT={k:'date',d:-1}, LAST_RANGE=null;
+// 月度汇总自带一套排序状态，故意不与明细表的 SORT 共享：月度表是全量月份、不随范围
+// 变化，而明细表的 SORT 会在切换范围时被 setRange() 重置。共用会让「切范围时月度
+// 表的排序也被顺手重置」，两件事没有关联。
+// 默认 k='month', d=1（月份升序，与后端返回顺序一致，即改动前的显示效果）。
+var MSORT={k:'month',d:1};
 var BASE=location.pathname.replace(/[^\/]*$/,'');
 // 前端版本号：改了这个文件就改这一行。后端版本号在 usage_server.py 的 BE_VER，
 // 由 /api/data 带过来，页头会同时显示两者（前后端各自计版本，互不牵连）。
-var FE_VER='v1.0.1';
+var FE_VER='v1.0.2';
 var tip=document.getElementById('tip');
 
 function fmt(n){ n=Number(n||0); return n.toLocaleString('en-US'); }
@@ -598,19 +603,52 @@ function renderSessions(){
   clampSessWToFit();   // 表格刚渲染完、布局可测：把宽度收进装得下的范围
 }
 
+// 月度汇总的列定义与取行：顺序即表头顺序，键名同时是排序键（与 th 的 data-k 对应）
+// 「非缓存输入」不是后端的字段，由 input - cached 现算（与每日明细同口径），
+// 所以要在这里先补出来，排序才排得到它
+function monthCols(){
+  return [['month','月份'],['req','请求数'],['fresh','非缓存输入'],['cached','缓存命中'],
+          ['output','输出'],['total','总词元'],['credit','积分']];
+}
+function monthRows(){
+  var rows=DATA.months.map(function(m){
+    return {month:m.month, req:m.req, fresh:Math.max(0,m.input-m.cached),
+            cached:m.cached, output:m.output, total:m.total, credit:m.credit};
+  });
+  rows.sort(function(a,b){
+    var x=a[MSORT.k], y=b[MSORT.k];
+    if(typeof x==='string'){ return MSORT.d*(x<y?-1:x>y?1:0); }
+    // 数值列用 (x||0)：credit 可能整月为 0 或缺失，不能让它变 NaN 把排序打乱
+    return MSORT.d*((x||0)-(y||0));
+  });
+  return rows;
+}
 function renderMonths(){
-  var html='<thead><tr><th>月份</th><th>请求数</th><th>非缓存输入</th><th>缓存命中</th><th>输出</th><th>总词元</th><th>积分</th></tr></thead><tbody>';
-  DATA.months.forEach(function(m){
-    var fresh=Math.max(0,m.input-m.cached);
+  var html='<thead><tr>'+monthCols().map(function(c){
+    return '<th data-k="'+c[0]+'" style="cursor:pointer">'+c[1]+
+      (MSORT.k===c[0]?(MSORT.d>0?' ▲':' ▼'):'')+'</th>';
+  }).join('')+'</tr></thead><tbody>';
+  monthRows().forEach(function(m){
     html+='<tr><td>'+m.month+'</td><td>'+fmt(m.req)+
-      '</td><td title="'+fmt(fresh)+' 词元">'+Mx(fresh)+'</td>'+
+      '</td><td title="'+fmt(m.fresh)+' 词元">'+Mx(m.fresh)+'</td>'+
       '<td title="'+fmt(m.cached)+' 词元">'+Mx(m.cached)+'</td>'+
       '<td title="'+fmt(m.output)+' 词元">'+Mx(m.output)+'</td>'+
       '<td title="'+fmt(m.total)+' 词元"><b>'+Mx(m.total)+'</b></td>'+
       '<td>'+(m.credit?m.credit.toFixed(1):'—')+'</td></tr>';
   });
   html+='</tbody>';
-  document.getElementById('tblMonth').innerHTML=html;
+  var t=document.getElementById('tblMonth');
+  t.innerHTML=html;
+  // 表头每次重渲染都要重新绑（innerHTML 会把旧节点连同 onclick 一起丢掉）。
+  // 与明细表同一套写法：先点某列 → 该列降序，再点同一列 → 反转
+  Array.prototype.forEach.call(t.querySelectorAll('th[data-k]'),function(th){
+    th.onclick=function(){
+      var k=th.getAttribute('data-k');
+      if(MSORT.k===k){ MSORT.d=-MSORT.d; }
+      else { MSORT.k=k; MSORT.d=(k==='month')?1:-1; }   // 月份按时间先后读最自然，数值列默认从大到小
+      renderMonths();
+    };
+  });
 }
 
 function renderAll(){
