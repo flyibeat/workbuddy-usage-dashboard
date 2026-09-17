@@ -11,6 +11,8 @@ packaging/        ← 打包成单文件 exe
 .github/workflows/ ← GitHub Actions：在云端构建 Windows / macOS / Linux 产物
 ```
 
+<img width="1039" height="920" alt="1789637075369_d" src="https://github.com/user-attachments/assets/752c59f1-3f86-4fd2-a378-65e5bc194d24" />
+
 ## 特性
 
 | 特性 | 说明 |
