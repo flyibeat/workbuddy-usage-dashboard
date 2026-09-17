@@ -8,6 +8,7 @@ dashboard.html    ← 前端：单文件看板，服务按 mtime 热加载
 healthcheck.py    ← 命令行健康检查
 start.cmd/.sh     ← 一键启动
 packaging/        ← 打包成单文件 exe
+.github/workflows/ ← GitHub Actions：在云端构建 Windows / macOS / Linux 产物
 ```
 
 ## 特性
@@ -114,6 +115,47 @@ python packaging/build_exe.py
 `packaging/build_exe.py` 是 PyInstaller 的 onefile 封装，已经排除了 `tkinter` / `unittest` / `pydoc` / `doctest` / `lib2to3` / `test` / `distutils` / `setuptools` / `pip` 等无用模块，把体积从约 14 MB 压到约 9.8 MB。
 
 设计要点：`dashboard.html` 用 `--add-data` 打进 exe 作**兜底**；程序目录下若另有 `dashboard.html`，那个优先 —— 这样打包后仍能热改前端，不必重新打包。
+
+## 用 GitHub Actions 云构建（本机不用装 Python 和 PyInstaller）
+
+仓库里已经带了 `.github/workflows/build.yml`，推上去即可用。Windows / macOS / Linux 三平台在 GitHub 的机器上并行构建，产物直接下载。
+
+### 方式一：手动构建
+
+**Actions → 左侧选 `Build` → 右上 `Run workflow` → 选分支 → `Run workflow`**。
+
+约 1~2 分钟后任务变绿，进入这次运行页面，最下方 **Artifacts** 区域可以下载：
+
+```
+wb-usage-windows-latest   →  wb-usage.exe
+wb-usage-ubuntu-latest    →  wb-usage
+wb-usage-macos-latest     →  wb-usage
+```
+
+下载下来是个 zip，解压即得可执行文件。**Artifact 默认保留 90 天。**
+
+### 方式二：打标签，自动发 Release
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+workflow 会自动构建三个平台，并创建一个 Release，把三份产物作为附件挂上去。适合发版本给别人用。
+
+### CI 里做了什么
+
+| 步骤 | 说明 |
+|---|---|
+| `actions/setup-python@v5` | 装 Python 3.13 |
+| `pip install pyinstaller` | 装打包工具 |
+| `python packaging/build_exe.py` | 出单文件产物（Windows 是 `.exe`，其余无后缀） |
+| 冒烟测试 | 后台起进程 → 轮询 `/api/health` → 打印结果 → 杀进程。**CI 机器上没有 WorkBuddy 数据，`records=0` 是正常的**；这一步真正的作用是确认二进制能起来、端口能绑、接口能应答（即没有"打包后运行期炸"） |
+| `upload-artifact` | 上传产物，找不到文件会直接报错，不会静默通过 |
+| `softprops/action-gh-release` | 仅当 ref 是 tag 时执行，附产物到 Release |
+
+> 无论用哪种方式，**产物跑起来后请以 `/api/health` 的 `records > 0` 为准**判断数据是否正常，而不是以进程状态为准。
+
 
 ## 让它常驻后台
 

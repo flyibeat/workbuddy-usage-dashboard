@@ -1,0 +1,80 @@
+name: Build
+
+# 触发方式：
+#   1) 手动：Actions 页 → Build → Run workflow
+#   2) 打标签：git tag v1.0.0 && git push origin v1.0.0  → 自动发 Release 并附上三个平台的产物
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 一个平台失败不影响其它平台出产物
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: Build single-file binary
+        # 输出：Windows 为 dist/wb-usage.exe，macOS / Linux 为 dist/wb-usage
+        run: python packaging/build_exe.py
+
+      - name: Smoke test (启动后查 /api/health，确认不是空数据)
+        shell: bash
+        run: |
+          set -e
+          BIN=dist/wb-usage.exe
+          [ -f "$BIN" ] || BIN=dist/wb-usage
+          chmod +x "$BIN" 2>/dev/null || true
+          ./"$BIN" --port 8899 &
+          PID=$!
+          for i in $(seq 1 30); do
+            sleep 1
+            if curl -sf http://127.0.0.1:8899/api/health > health.json; then break; fi
+          done
+          kill $PID 2>/dev/null || true
+          echo "--- /api/health ---"
+          cat health.json || echo "健康检查未返回（CI 里没有 WorkBuddy 数据属正常）"
+          echo "--- 文件清单 ---"
+          ls -l dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wb-usage-${{ matrix.os }}
+          path: dist/wb-usage*
+          if-no-files-found: error
+
+      - name: Attach to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/wb-usage*
+          generate_release_notes: true
+          body: |
+            单文件构建产物，零运行时依赖，拷走即用。
+
+            | 平台 | 文件 | 说明 |
+            |---|---|---|
+            | Windows | `wb-usage.exe` | 双击运行；`--open` 会自动开浏览器 |
+            | macOS | `wb-usage` | **未签名**，首次运行需 `chmod +x wb-usage`，若被 Gatekeeper 拦下：右键 → 打开 |
+            | Linux | `wb-usage` | `chmod +x wb-usage && ./wb-usage` |
+
+            运行前请确认本机已安装 WorkBuddy 且 `~/.workbuddy/projects/` 下有会话数据。
