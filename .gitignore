@@ -9,6 +9,9 @@ stderr.log
 deploy.log
 *.log
 
+# 发布脚本（release_frontend.py）写在这里的临时提交信息文件，用完即删，不该入库
+_release_msg.txt
+
 # ---------------------------------------------------------------- 打包产物
 dist/
 build/

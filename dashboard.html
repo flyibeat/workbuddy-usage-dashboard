@@ -111,12 +111,13 @@ td .mu{font-size:11px;font-weight:500;color:var(--tx2);margin-left:2px}
 .tip .tt-v{text-align:right}
 .errbox{background:#fff5f5;border:1px solid #ffd4d4;color:#a32222;border-radius:9px;
   padding:10px 13px;font-size:12.5px;margin-bottom:14px}
+.rcw{color:#a06a00}   /* 对账差异数：不刺眼但看得出 */
 </style></head><body><div class="wrap">
 
 <div class="hd">
   <div>
     <h1>WorkBuddy 词元用量看板</h1>
-    <div class="sub">数据源 <code>~/.workbuddy/projects/**/*.jsonl</code> ｜ 覆盖 <span id="span">—</span> ｜ 共 <span id="recn">—</span> 条请求记录 ｜ 单位统一为 M（百万词元）<span id="ver"></span></div>
+    <div class="sub">数据源 <code>~/.workbuddy/projects/**/*.jsonl</code> ｜ 覆盖 <span id="span">—</span> ｜ 共 <span id="recn">—</span> 条请求记录 ｜ 单位统一为 M（百万词元）｜ 对账 DB <span id="rec">—</span><span id="ver"></span></div>
   </div>
   <div class="live">
     <span class="dot" id="dot"></span>
@@ -241,7 +242,7 @@ function bindSortTh(t,onPick){
 var BASE=location.pathname.replace(/[^\/]*$/,'');
 // 前端版本号：改了这个文件就改这一行。后端版本号在 usage_server.py 的 BE_VER，
 // 由 /api/data 带过来，页头会同时显示两者（前后端各自计版本，互不牵连）。
-var FE_VER='v1.0.4';
+var FE_VER='v1.0.5';
 var tip=document.getElementById('tip');
 
 function fmt(n){ n=Number(n||0); return n.toLocaleString('en-US'); }
@@ -532,7 +533,6 @@ function renderDaily(){
   var hm=isHourMode();
   var rows=hm?todayHours():sliceDays().slice();
   var defaultKey=hm?'hour':'date';
-  if(SORT.k!=='hour' && SORT.k!=='date' && !hm) {}
   if((hm&&SORT.k==='date')||(!hm&&SORT.k==='hour')){ SORT={k:defaultKey,d:hm?1:-1}; saveSort(DAILY_SORT_KEY,SORT); }
   rows.sort(function(a,b){
     var x=a[SORT.k], y=b[SORT.k];
@@ -766,6 +766,33 @@ function checkPageVer(mtime, srvVer){
   }
 }
 
+// 两类需要人知道的情况都进这个红框：整轮扫描失败，以及「有记录被跳过」。
+// 后者是静默少算（统计偏低但页面一切正常），不主动报出来没人会发现。
+function warnHTML(j){
+  var w=[];
+  if(j.scanError) w.push('扫描告警：'+esc(j.scanError));
+  if(j.parseSkipped) w.push('有 '+fmt(j.parseSkipped)+' 条请求记录的字段类型异常，已跳过 —— 总词元与积分可能略低于实际。详见服务日志。');
+  return w.length ? '<div class="errbox">'+w.join('<br>')+'</div>' : '';
+}
+
+// ---- 与 workbuddy.db 的积分对账 ------------------------------------------
+// 后端每轮刷新都会拿 jsonl 累加出的 credit 与 workbuddy.db 的 session_usage.credit_json
+// 逐会话比对（reconcile 字段）。这个数字以前一直在算、却从来没露过面 —— 而它对不上时
+// 恰恰说明两边的口径有差异，值得看一眼，所以放在页头元信息里，鼠标悬停给明细。
+function renderReconcile(rc){
+  var el=document.getElementById('rec');
+  if(!el) return;
+  if(!rc || !rc.checked){ el.textContent='—'; el.title=''; return; }
+  var diff=(rc.mismatch||0)+(rc.missing||0);
+  el.innerHTML='<b>'+rc.match+'/'+rc.checked+'</b> 一致'
+    + (diff ? '（<span class="rcw">'+diff+' 项不同</span>）' : '（全部一致）');
+  el.title='与 workbuddy.db 的 session_usage.credit_json 逐会话比对：\n'
+    + '  一致 '+rc.match+' ／ 不一致 '+rc.mismatch+' ／ 本工具缺 '+(rc.missing||0)
+    + ' ／ 可比会话 '+rc.checked+'\n'
+    + '不一致说明两边对积分的口径有差异（本工具从 jsonl 逐条累加，DB 另有一套记录）；\n'
+    + '看板内部的加减与占比不受影响，这只是一个完整性自检。';
+}
+
 function load(force){
   fetch(BASE+'api/data'+(force?'?force=1':'')).then(function(r){
     if(!r.ok) throw new Error('HTTP '+r.status);
@@ -778,8 +805,8 @@ function load(force){
     st.textContent='数据更新于 '+j.generatedAt.slice(11,19)+'　每 '+j.refreshSec+' 秒自动刷新';
     document.getElementById('span').textContent=(j.span.from||'').slice(0,10)+' ~ '+(j.span.to||'').slice(0,10);
     document.getElementById('recn').textContent=fmt(j.recordCount);
-    document.getElementById('err').innerHTML = j.scanError
-      ? '<div class="errbox">扫描告警：'+esc(j.scanError)+'</div>' : '';
+    renderReconcile(j.reconcile);
+    document.getElementById('err').innerHTML=warnHTML(j);
     initPickers();
     syncBtns();
     renderAll();
