@@ -178,13 +178,13 @@ td .mu{font-size:11px;font-weight:500;color:var(--tx2);margin-left:2px}
 </div>
 
 <div class="panel">
-  <div class="ph"><h2>模型分布 <small id="mNote"></small></h2></div>
+  <div class="ph"><h2>模型分布 <small>点击表头可排序（排序方向会被记住）；<span id="mNote"></span></small></h2></div>
   <div class="scroll"><table id="tblModel"></table></div>
 </div>
 
 <div class="grid2">
   <div class="panel">
-    <div class="ph"><h2>单会话消耗 Top 20 <small>灰色为会话 ID 前 8 位；悬停看完整标题与目录；标题宽度 <i class="gripico"></i> 可左右拖调（双击复位）</small></h2></div>
+    <div class="ph"><h2>单会话消耗 Top 20 <small>点击表头可在 Top 20 内排序（方向会被记住）；灰色为会话 ID 前 8 位；悬停看完整标题与目录；标题宽度 <i class="gripico"></i> 可左右拖调（双击复位）</small></h2></div>
     <div class="scroll"><table id="tblSess"></table></div>
   </div>
   <div class="panel">
@@ -220,10 +220,28 @@ var SORT=loadSort(DAILY_SORT_KEY,{k:'date',d:-1},DAILY_SORT_KEYS);
 // 变化，而明细表的 SORT 会在切换范围时被 setRange() 重置。共用会让「切范围时月度
 // 表的排序也被顺手重置」，两件事没有关联。
 var MSORT=loadSort(MONTH_SORT_KEY,{k:'month',d:-1},MONTH_SORT_KEYS);
+// 模型分布表与单会话 Top 20 表同样带记忆（键 wb_sort_models / wb_sort_sessions）。
+// 默认都按总词元降序 —— 与后端下发的顺序一致，即改动前的显示效果。
+var MODEL_SORT_KEY='wb_sort_models', SESS_SORT_KEY='wb_sort_sessions';
+var MODEL_SORT_KEYS=['model','req','fresh','cached','output','total','pct','credit'];
+var SESS_SORT_KEYS=['title','req','total','output','credit'];
+var MODELSORT=loadSort(MODEL_SORT_KEY,{k:'total',d:-1},MODEL_SORT_KEYS);
+var SESSSORT=loadSort(SESS_SORT_KEY,{k:'total',d:-1},SESS_SORT_KEYS);
+// 表头点击的统一绑法：innerHTML 重建会把旧节点的 onclick 一起丢掉，所以每次渲染都要
+// 重新绑一遍。四张可排序的表都走这里（新增表时别再各写一份）。
+function bindSortTh(t,onPick){
+  Array.prototype.forEach.call(t.querySelectorAll('th[data-k]'),function(th){
+    th.onclick=function(ev){
+      // 会话标题列里嵌着列宽拖拽把手，点它会冒泡到 th —— 那不是在点排序
+      if(ev && ev.target && ev.target.closest && ev.target.closest('.sessgrip')) return;
+      onPick(th.getAttribute('data-k'));
+    };
+  });
+}
 var BASE=location.pathname.replace(/[^\/]*$/,'');
 // 前端版本号：改了这个文件就改这一行。后端版本号在 usage_server.py 的 BE_VER，
 // 由 /api/data 带过来，页头会同时显示两者（前后端各自计版本，互不牵连）。
-var FE_VER='v1.0.3';
+var FE_VER='v1.0.4';
 var tip=document.getElementById('tip');
 
 function fmt(n){ n=Number(n||0); return n.toLocaleString('en-US'); }
@@ -550,16 +568,20 @@ function renderDaily(){
   var extra=(pickedDay()||pickedSpan()) ? (rangeLabel()+' · ') : '';
   document.getElementById('dailyTitle').innerHTML=(hm?(RANGE==='today'?'今日分时明细':'当日分时明细'):'每日明细')+
     ' <small>'+extra+'点击表头可排序，悬停看精确值（单位 M = 百万词元）；「本表对比」列悬停可看口径说明</small>';
-  Array.prototype.forEach.call(t.querySelectorAll('th[data-k]'),function(th){
-    th.onclick=function(){
-      var k=th.getAttribute('data-k');
-      if(SORT.k===k){ SORT.d=-SORT.d; } else { SORT.k=k; SORT.d=(k==='hour'||k==='date')?(hm?1:-1):-1; }
-      saveSort(DAILY_SORT_KEY,SORT);   // 记住这次点击：刷新后仍是这个列与方向
-      renderDaily();
-    };
+  bindSortTh(t,function(k){
+    if(SORT.k===k){ SORT.d=-SORT.d; } else { SORT.k=k; SORT.d=(k==='hour'||k==='date')?(hm?1:-1):-1; }
+    saveSort(DAILY_SORT_KEY,SORT);   // 记住这次点击：刷新后仍是这个列与方向
+    renderDaily();
   });
 }
 
+// 模型分布的列定义：顺序即表头顺序，键名同时是排序键（与 th 的 data-k 对应）。
+// 'pct'（占比）是派生列（该行 total ÷ 本表 Σtotal），排序时归到 'total' —— 两者必然同序，
+// 但给它一个自己的键，点「占比」时指示器才会落在占比列上，而不是跑到「总词元」那列。
+function modelCols(){
+  return [['model','模型'],['req','请求数'],['fresh','非缓存输入'],['cached','缓存命中'],
+          ['output','输出'],['total','总词元'],['pct','占比'],['credit','积分']];
+}
 function renderModels(){
   var hm=isHourMode();
   var rows, note;
@@ -580,9 +602,18 @@ function renderModels(){
     o.req+=m.req; o.fresh+=(m.fresh||0); o.cached+=m.cached; o.output+=m.output;
     o.total+=m.total; o.credit+=m.credit;
   });
-  var list=Object.keys(by).map(function(k){return by[k];}).sort(function(a,b){return b.total-a.total;});
+  var list=Object.keys(by).map(function(k){return by[k];});
   var sum=list.reduce(function(a,x){return a+x.total;},0)||1;
-  var html='<thead><tr><th>模型</th><th>请求数</th><th>非缓存输入</th><th>缓存命中</th><th>输出</th><th>总词元</th><th>占比</th><th>积分</th></tr></thead><tbody>';
+  var mkey=(MODELSORT.k==='pct')?'total':MODELSORT.k;   // 占比 → 按总词元排
+  list.sort(function(a,b){
+    var x=a[mkey], y=b[mkey];
+    if(typeof x==='string'){ return MODELSORT.d*(x<y?-1:x>y?1:0); }
+    return MODELSORT.d*((x||0)-(y||0));
+  });
+  var html='<thead><tr>'+modelCols().map(function(c){
+    return '<th data-k="'+c[0]+'" style="cursor:pointer">'+c[1]+
+      (MODELSORT.k===c[0]?(MODELSORT.d>0?' ▲':' ▼'):'')+'</th>';
+  }).join('')+'</tr></thead><tbody>';
   list.forEach(function(x){
     html+='<tr><td class="mono">'+esc(x.model)+'</td><td>'+fmt(x.req)+
       '</td><td title="'+fmt(x.fresh)+' 词元">'+Mx(x.fresh)+'</td>'+
@@ -593,15 +624,49 @@ function renderModels(){
       '<td>'+(x.credit?x.credit.toFixed(1):'—')+'</td></tr>';
   });
   html+='</tbody>';
-  document.getElementById('tblModel').innerHTML=html;
+  var tm=document.getElementById('tblModel');
+  tm.innerHTML=html;
   document.getElementById('mNote').textContent=note;
+  bindSortTh(tm,function(k){
+    if(MODELSORT.k===k){ MODELSORT.d=-MODELSORT.d; } else { MODELSORT.k=k; MODELSORT.d=-1; }
+    saveSort(MODEL_SORT_KEY,MODELSORT);
+    renderModels();
+  });
 }
 
+// 单会话表的列定义与取行。注意语义：表里的数据是后端「按总词元取的前 60 条」里再切前 20 条，
+// 排序只在这 20 行内换序 —— 想看「按积分排的前 20 个会话」得改后端那个截断口径。
+// 首列排序键 'title' 取的就是显示用的标题（无标题回退会话 ID 前 8 位），与屏幕内容一致。
+function sessCols(){
+  return [['title','会话标题'],['req','请求数'],['total','总词元'],['output','输出'],['credit','积分']];
+}
+function sessSortKey(s){
+  var sid=String(s.session==null?'':s.session);
+  return s.title || sid.slice(0,8);
+}
+function sessRows(){
+  var rows=DATA.sessions.slice(0,20).map(function(s){
+    return {title:sessSortKey(s), req:s.req, total:s.total, output:s.output, credit:s.credit, s:s};
+  });
+  rows.sort(function(a,b){
+    var x=a[SESSSORT.k], y=b[SESSSORT.k];
+    if(typeof x==='string'){ return SESSSORT.d*(x<y?-1:x>y?1:0); }
+    return SESSSORT.d*((x||0)-(y||0));
+  });
+  return rows;
+}
 function renderSessions(){
   if(SESS_DRAG) return;   // 拖动列宽时别重建表头，否则把手会闪断
-  var html='<thead><tr><th class="sessh">会话标题<span class="sessgrip"></span></th>'+
-    '<th>请求数</th><th>总词元</th><th>输出</th><th>积分</th></tr></thead><tbody>';
-  DATA.sessions.slice(0,20).forEach(function(s){
+  var html='<thead><tr>'+sessCols().map(function(c,i){
+    var mark=(SESSSORT.k===c[0])?(SESSSORT.d>0?' ▲':' ▼'):'';
+    // 首列多一个拖拽把手（Excel 式钉在列右边界）；把手必须在 th 内且带 .sessgrip，
+    // 点它不算排序——bindSortTh 里挡掉了
+    return (i===0)
+      ? '<th class="sessh" data-k="'+c[0]+'" style="cursor:pointer">'+c[1]+mark+'<span class="sessgrip"></span></th>'
+      : '<th data-k="'+c[0]+'" style="cursor:pointer">'+c[1]+mark+'</th>';
+  }).join('')+'</tr></thead><tbody>';
+  sessRows().forEach(function(r){
+    var s=r.s;
     var sid=String(s.session==null?'':s.session);
     var short=sid.slice(0,8);
     var full=s.title||'';
@@ -617,7 +682,13 @@ function renderSessions(){
       '<td>'+(s.credit?s.credit.toFixed(1):'—')+'</td></tr>';
   });
   html+='</tbody>';
-  document.getElementById('tblSess').innerHTML=html;
+  var ts=document.getElementById('tblSess');
+  ts.innerHTML=html;
+  bindSortTh(ts,function(k){
+    if(SESSSORT.k===k){ SESSSORT.d=-SESSSORT.d; } else { SESSSORT.k=k; SESSSORT.d=-1; }
+    saveSort(SESS_SORT_KEY,SESSSORT);
+    renderSessions();
+  });
   applySessW();
   clampSessWToFit();   // 表格刚渲染完、布局可测：把宽度收进装得下的范围
 }
@@ -660,14 +731,11 @@ function renderMonths(){
   t.innerHTML=html;
   // 表头每次重渲染都要重新绑（innerHTML 会把旧节点连同 onclick 一起丢掉）。
   // 与明细表同一套写法：先点某列 → 该列降序，再点同一列 → 反转
-  Array.prototype.forEach.call(t.querySelectorAll('th[data-k]'),function(th){
-    th.onclick=function(){
-      var k=th.getAttribute('data-k');
-      if(MSORT.k===k){ MSORT.d=-MSORT.d; }
-      else { MSORT.k=k; MSORT.d=-1; }   // 换新列一律先降序：数值列从大到小；月份即大月在上、小月在下
-      saveSort(MONTH_SORT_KEY,MSORT);   // 记住这次点击：刷新后仍是这个列与方向
-      renderMonths();
-    };
+  bindSortTh(t,function(k){
+    if(MSORT.k===k){ MSORT.d=-MSORT.d; }
+    else { MSORT.k=k; MSORT.d=-1; }   // 换新列一律先降序：数值列从大到小；月份即大月在上、小月在下
+    saveSort(MONTH_SORT_KEY,MSORT);   // 记住这次点击：刷新后仍是这个列与方向
+    renderMonths();
   });
 }
 
