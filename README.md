@@ -57,6 +57,29 @@ python packaging/build_exe.py
 
 然后浏览器打开 <http://127.0.0.1:8791>。
 
+### 方式三：直接下载已构建好的产物
+
+不想装 Python 和 PyInstaller，就直接去 [Releases](https://github.com/flyibeat/workbuddy-usage-dashboard/releases/latest) 下最新一版，挑对应平台的产物：
+
+```
+wb-usage-windows-x64.exe    Windows x64，双击即用    约 9.9 MB
+wb-usage-linux-x64          Linux x64              约 24 MB
+wb-usage-macos-arm64        macOS（Apple Silicon）  约 8.6 MB
+```
+
+只要这三个平台的话直接下载即可；**Intel Mac 没有预构建产物**，请用方式二自己构建（在 Mac 上打出来就是 x86_64 的）。
+
+macOS / Linux 下载后要补一个执行权限（Windows 免这一步）：
+
+```bash
+chmod +x wb-usage-linux-x64
+./wb-usage-linux-x64 --open      # 参数与方式二完全一样，也可 --port 换端口
+```
+
+> macOS 的产物没有做代码签名，首次打开若提示「无法验证开发者」，右键点图标选「打开」放行一次即可；或在终端执行 `xattr -d com.apple.quarantine wb-usage-macos-arm64`。
+
+产物文件名里不含版本号，下载时对着 Release 的标签认一下版本。想改前端不必重新下载 —— 把改好的 `dashboard.html` 放到可执行文件同目录，它会优先于内嵌副本。
+
 ## 数据来源
 
 程序只读两处，**全部位于 WorkBuddy 的数据目录**：
