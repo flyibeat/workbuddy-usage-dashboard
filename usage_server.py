@@ -75,7 +75,7 @@ ARGV = _normalize_argv(sys.argv)
 #
 # 「改了代码就改这里」是唯一的版本来源 —— 不要靠外部变量或 git 标签注入，
 # 否则代码与版本号会各说各话。WB_VERSION 仅作临时覆盖（验证、临时构建）用。
-BE_VER = os.environ.get('WB_VERSION', '').strip() or 'v1.0.2'
+BE_VER = os.environ.get('WB_VERSION', '').strip() or 'v1.0.3'
 
 # ---- 数据根定位 -------------------------------------------------------------
 #
@@ -282,16 +282,22 @@ def _console_supports_color():
 
 
 def log(msg, level=''):
-    """写一行日志。level='warn' 时控制台上标红；日志文件里始终是纯文本。"""
+    """写一行日志。level='warn' 时控制台上标红；日志文件里始终是纯文本。
+
+    注意：走 stderr 而不是 stdout。本模块会被别的程序 import 来当「数据源」
+    （如 tools/local_api_data.py 把 /api/data 的 JSON 打到 stdout），
+    日志若混在 stdout 里会污染 JSON，调用方 JSON.parse 直接崩
+    —— 2026-09-21 实测踩到。
+    """
     ts = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     plain = '[%s] %s' % (ts, msg)
     out = plain
     if level == 'warn' and _console_supports_color():
         out = '\033[31m%s\033[0m' % plain
     try:
-        print(out, flush=True)
+        print(out, file=sys.stderr, flush=True)
     except Exception:
-        # 计划任务 / pythonw 等无有效标准输出时静默
+        # 计划任务 / pythonw 等无有效标准错误时静默
         pass
     try:
         with open(LOG_PATH, 'a', encoding='utf-8') as fh:
@@ -546,8 +552,11 @@ def agg(records):
         h['credit'] += credit
         s = ses[sid]
         s['req'] += 1
+        s['input'] += inp
         s['total'] += tot
         s['output'] += out
+        s['cached'] += cached
+        s['fresh'] += (inp - cached if inp > cached else 0)
         s['credit'] += credit
         mm = month[d[:7]]
         mm['req'] += 1

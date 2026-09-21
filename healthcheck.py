@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 """看板服务健康检查：端口监听、扫描状态、数据新鲜度。"""
 import json
-import os
 import socket
 import sys
 import time
 import urllib.request
 
-PORT = int(os.environ.get('WB_USAGE_PORT', '8791'))
+PORT = 8791
 BASE = 'http://127.0.0.1:%d' % PORT
 
 
@@ -18,7 +17,7 @@ def main():
     s.close()
     print('端口 %d 监听: %s' % (PORT, listening))
     if not listening:
-        print('服务未运行。可双击 start.cmd 启动（macOS/Linux：./start.sh）。')
+        print('服务未运行。可双击 usage-server\\重启看板服务.cmd 启动。')
         return 1
     try:
         with urllib.request.urlopen(BASE + '/api/health', timeout=5) as f:

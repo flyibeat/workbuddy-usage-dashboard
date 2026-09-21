@@ -184,7 +184,7 @@ td .mu{font-size:11px;font-weight:500;color:var(--tx2);margin-left:2px}
 
 <div class="grid2">
   <div class="panel">
-    <div class="ph"><h2>单会话消耗 Top 20 <small>点击表头可在 Top 20 内排序（方向会被记住）；灰色为会话 ID 前 8 位；悬停看完整标题与目录；标题宽度 <i class="gripico"></i> 可左右拖调（双击复位）</small></h2></div>
+    <div class="ph"><h2>单会话消耗 Top 20 <small>点击表头可在 Top 20 内排序（方向会被记住）；灰色为会话 ID 前 8 位；悬停看完整标题与目录；悬停「总词元」看缓存命中/非缓存输入/输入合计及其占总词元的比例；标题宽度 <i class="gripico"></i> 可左右拖调（双击复位）</small></h2></div>
     <div class="scroll"><table id="tblSess"></table></div>
   </div>
   <div class="panel">
@@ -241,7 +241,7 @@ function bindSortTh(t,onPick){
 var BASE=location.pathname.replace(/[^\/]*$/,'');
 // 前端版本号：改了这个文件就改这一行。后端版本号在 usage_server.py 的 BE_VER，
 // 由 /api/data 带过来，页头会同时显示两者（前后端各自计版本，互不牵连）。
-var FE_VER='v1.0.6';
+var FE_VER='v1.0.9';
 var tip=document.getElementById('tip');
 
 function fmt(n){ n=Number(n||0); return n.toLocaleString('en-US'); }
@@ -645,7 +645,10 @@ function sessSortKey(s){
 }
 function sessRows(){
   var rows=DATA.sessions.slice(0,20).map(function(s){
-    return {title:sessSortKey(s), req:s.req, total:s.total, output:s.output, credit:s.credit, s:s};
+    // fresh / cached 只用于总词元列的悬停提示，不参与排序（排序键仍是那 5 列）
+    var inp=s.input||0, ca=s.cached||0;
+    return {title:sessSortKey(s), req:s.req, total:s.total, output:s.output, credit:s.credit,
+            fresh:(s.fresh!=null?s.fresh:Math.max(0,inp-ca)), cached:ca, s:s};
   });
   rows.sort(function(a,b){
     var x=a[SESSSORT.k], y=b[SESSSORT.k];
@@ -672,11 +675,37 @@ function renderSessions(){
     // 悬停给全量信息：完整标题 + 工作目录 + 完整会话 ID（同名会话靠 ID 区分）
     var tipv=(full||'(无标题)')+(s.cwd?'\n'+s.cwd:'')+'\n'+sid;
     // 标题不再在 JS 里截字符：整串交给 CSS，由 --sess-w 决定露出多少、自动补省略号
+    // 总词元列的悬停：复用图表那套 data-tipx 三列网格（标签 / 数值 / 占比）。
+    // 只要三行：缓存命中 / 非缓存输入 / 输入合计，**不出标题行**（不传 t 字段，
+    // tipHTML 里 `if(p.t)` 会跳过，不会留空行）。
+    // 占比分母统一用 **总词元**（= 非缓存 + 缓存 + 输出），这样三行占比与
+    // 「输出」列合起来正好闭合到 100%，口径与表头「总词元」一致。
+    //
+    // ⚠️ 舍入必须「先分量、后合计反推」，不能让三行各自独立 toFixed(1)：
+    // 「输入合计」恒等于「缓存命中 + 非缓存输入」，两个分量各自舍入后
+    // 极可能与合计的独立舍入差 0.1%（实测 20 行里 17 行会差），
+    // 表现为「97.2% + 1.7% = 98.9%，却显示 98.8%」——用户一眼就看出不对。
+    // 现在合计行取**已舍入分量之和**（含输出的那 0.0~0.2% 余量不予纠缠），
+    // 保证「上一行 + 下一行 = 合计行」在屏幕上严格成立。
+    var inSum=(r.fresh||0)+(r.cached||0);
+    var tot=r.total||0;
+    var tpx=null;
+    if(tot>0){
+      var r1=function(v){ return Math.round(v/tot*1000)/10; };   // 保留 1 位小数的数值
+      var fPct=r1(r.cached), nPct=r1(r.fresh);
+      var pv=function(n){ return '占比 '+n.toFixed(1)+'%'; };
+      tpx={ r:[['缓存命中',   fmt(r.cached)+' 词元', pv(fPct)],
+              ['非缓存输入', fmt(r.fresh)+' 词元',  pv(nPct)],
+              ['输入合计',   fmt(inSum)+' 词元',    pv(fPct+nPct)]] };
+    }
+    var totalTd=tpx
+      ? '<td data-tipx="'+esc(JSON.stringify(tpx))+'"><b>'+Mx(r.total)+'</b></td>'
+      : '<td><b>'+Mx(r.total)+'</b></td>';
     html+='<tr><td class="sess" title="'+esc(tipv)+'">'+
       '<span class="st">'+esc(full||short)+'</span>'+
       '<span class="sid mono">'+esc(short)+'</span></td>'+
       '<td>'+fmt(s.req)+
-      '</td><td title="'+fmt(s.total)+' 词元">'+Mx(s.total)+'</td>'+
+      '</td>'+totalTd+
       '<td title="'+fmt(s.output)+' 词元">'+Mx(s.output)+'</td>'+
       '<td>'+(s.credit?s.credit.toFixed(1):'—')+'</td></tr>';
   });
@@ -907,7 +936,8 @@ function tipHTML(el){
   p.r.forEach(function(r){
     h+='<span>'+esc(r[0])+'</span><span class="tt-v">'+esc(r[1])+'</span><span>'+esc(r[2])+'</span>';
   });
-  if(p.f) h+='<span class="tt-f">'+esc(p.f[0])+'</span><span class="tt-v">'+esc(p.f[1])+'</span><span></span>';
+  if(p.f) h+='<span class="tt-f">'+esc(p.f[0])+'</span><span class="tt-v">'+esc(p.f[1])+'</span>'
+           +'<span>'+esc(p.f[2]||'')+'</span>';
   return h+'</div>';
 }
 

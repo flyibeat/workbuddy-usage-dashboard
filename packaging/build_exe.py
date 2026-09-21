@@ -42,6 +42,50 @@ EXCLUDES = [
 # 注意：不要排除 email / html —— http.server 内部要用它们（格式化 Date 头、转义错误页）。
 # 也不要排除 xml、urllib 子模块，收益小、踩坑概率高。
 
+# 装了 PyInstaller 的解释器候选。
+# 为什么要探测而不是写死：本脚本用 sys.executable 去跑 `-m PyInstaller`，谁调用它就用谁——
+# 而 WorkBuddy 的托管 Python（binaries\python\versions\...）**没装** PyInstaller，
+# 于是打包静默失败（退出码 1、耗时 0.4 秒、exe 时间戳不变），日志还只在重定向文件里。
+# 这里改成「当前解释器不行就自动换一个能用的」，避免同一坑再踩。
+#
+# 顺序：WB_PYTHON 环境变量 → ~/.workbuddy 下的 venv（本机常用）→ PATH 里的 python/py。
+# 不写死用户名或盘符，换机器/换用户也能跑。
+def _candidate_interpreters():
+    cands = [sys.executable]
+    env_py = os.environ.get('WB_PYTHON', '').strip()
+    if env_py:
+        cands.append(env_py)
+    home = os.path.expanduser('~')
+    if home and home != '~':
+        for rel in (
+            r'.workbuddy\binaries\python\envs\default\Scripts\python.exe',
+            r'.workbuddy\binaries\python\envs\default\bin\python',      # macOS / Linux
+        ):
+            cands.append(os.path.join(home, rel))
+    cands += ['python', 'python3', 'py', 'py -3']
+    return cands
+
+
+def pick_interpreter():
+    """返回一个能 `import PyInstaller` 的解释器路径；找不到就返回 None。"""
+    seen, out = set(), []
+    for p in _candidate_interpreters():
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    for p in out:
+        # 绝对路径的候选先确认文件在；裸命令（python/py）交给 PATH 解析
+        if os.path.isabs(p) and not os.path.exists(p):
+            continue
+        try:
+            r = subprocess.run(p.split() + ['-c', 'import PyInstaller'],
+                               capture_output=True, timeout=60)
+        except Exception:
+            continue
+        if r.returncode == 0:
+            return p
+    return None
+
 
 def main():
     for f, label in ((ENTRY, '入口脚本'), (HTML, '前端')):
@@ -49,8 +93,18 @@ def main():
             print('缺少%s：%s' % (label, f))
             return 2
 
-    args = [
-        sys.executable, '-m', 'PyInstaller',
+    py = pick_interpreter()
+    if not py:
+        print('找不到装有 PyInstaller 的解释器。已试：')
+        for p in _candidate_interpreters():
+            print('  ' + p)
+        print('请先安装：<上面某个 python> -m pip install pyinstaller')
+        return 3
+    if py != sys.executable:
+        print('当前解释器没有 PyInstaller，自动切换到：%s' % py)
+    print('构建解释器：%s' % py)
+
+    args = py.split() + ['-m', 'PyInstaller',
         '--onefile',
         '--console',
         '--name', NAME,
