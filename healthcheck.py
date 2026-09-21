@@ -17,7 +17,7 @@ def main():
     s.close()
     print('端口 %d 监听: %s' % (PORT, listening))
     if not listening:
-        print('服务未运行。可双击 usage-server\\重启看板服务.cmd 启动。')
+        print('服务未运行。可双击 start.cmd 启动（macOS/Linux：./start.sh）。')
         return 1
     try:
         with urllib.request.urlopen(BASE + '/api/health', timeout=5) as f:
