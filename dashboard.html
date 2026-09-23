@@ -61,7 +61,19 @@ body{background:var(--bg);color:var(--tx);font-size:14px;line-height:1.6;
 .panel h2 small{color:var(--tx3);font-weight:400;font-size:12px;margin-left:7px}
 .legend{display:flex;gap:14px;font-size:12px;color:var(--tx2);align-items:center;flex-wrap:wrap}
 .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
-.chart{width:100%;overflow-x:auto}
+/* 图表分两层：左列 Y 轴固定在视口里、不参与横向滚动，只有右侧绘图区滚。
+   否则拖到区间中段时 171M / 129M 这些刻度会跟着滚出屏幕（v1.1.1 修）。
+   .chart 必须 min-width:0，否则 flex 子项不肯收缩到内容宽以下，滚动条不会出现。
+   轴列宽由 JS 的 AXIS_W 写到 #yaxis 的 style.width 上；列内刻度左对齐在 x=0，贴住
+   本列左边缘，而本列左边缘与标题行 .ph 相同 —— 所以刻度与标题首字左对齐（v1.1.2）。 */
+.chartrow{display:flex;align-items:flex-start}
+.yaxis{flex:0 0 auto;overflow:hidden}
+.yaxis svg{display:block}
+.chart{flex:1 1 auto;min-width:0;overflow-x:auto;scrollbar-width:thin;scrollbar-color:#c8ccd2 #f0f2f5}
+.chart::-webkit-scrollbar{height:10px}
+.chart::-webkit-scrollbar-track{background:#f0f2f5;border-radius:5px}
+.chart::-webkit-scrollbar-thumb{background:#c8ccd2;border-radius:5px}
+.chart::-webkit-scrollbar-thumb:hover{background:#a3aab4}
 .chart svg{display:block}
 .bar{transition:opacity .12s}
 .bar:hover{opacity:.78}
@@ -168,7 +180,10 @@ td .mu{font-size:11px;font-weight:500;color:var(--tx2);margin-left:2px}
       <span><i style="background:var(--c-out)"></i>输出</span>
     </div>
   </div>
-  <div class="chart" id="chart"></div>
+  <div class="chartrow">
+    <div class="yaxis" id="yaxis"></div>
+    <div class="chart" id="chart"></div>
+  </div>
   <div class="note" id="chartNoteBox"></div>
 </div>
 
@@ -178,17 +193,17 @@ td .mu{font-size:11px;font-weight:500;color:var(--tx2);margin-left:2px}
 </div>
 
 <div class="panel">
-  <div class="ph"><h2>模型分布 <small>点击表头可排序（排序方向会被记住）；<span id="mNote"></span></small></h2></div>
+  <div class="ph"><h2>模型分布 <small>点击表头可排序；<span id="mNote"></span></small></h2></div>
   <div class="scroll"><table id="tblModel"></table></div>
 </div>
 
 <div class="grid2">
   <div class="panel">
-    <div class="ph"><h2>单会话消耗 Top 20 <small>点击表头可在 Top 20 内排序（方向会被记住）；灰色为会话 ID 前 8 位；悬停看完整标题与目录；悬停「总词元」看缓存命中/非缓存输入/输入合计及其占总词元的比例；标题宽度 <i class="gripico"></i> 可左右拖调（双击复位）</small></h2></div>
+    <div class="ph"><h2>单会话消耗 Top 20 <small>点击表头可在 Top 20 内排序；灰色为会话 ID 前 8 位；悬停看完整标题与目录；悬停「总词元」看缓存命中/非缓存输入/输入合计及其占总词元的比例；标题宽度 <i class="gripico"></i> 可左右拖调（双击复位）</small></h2></div>
     <div class="scroll"><table id="tblSess"></table></div>
   </div>
   <div class="panel">
-    <div class="ph"><h2>月度汇总 <small>点击表头可排序（默认大月在上，小月在下）；排序方向会被记住</small></h2></div>
+    <div class="ph"><h2>月度汇总 <small>点击表头可排序（默认大月在上，小月在下）</small></h2></div>
     <div class="scroll"><table id="tblMonth"></table></div>
   </div>
 </div>
@@ -213,6 +228,22 @@ function loadSort(lsKey,def,valid){
 }
 function saveSort(lsKey,o){ try{ localStorage.setItem(lsKey,JSON.stringify({k:o.k,d:o.d})); }catch(e){} }
 var DATA=null, RANGE=7, LAST_RANGE=null;
+// 「每日词元构成」的横向视野：按天模式下可视区固定铺 CHART_VIS_DAYS 天，天数超过它
+// 就按比例加宽画布、交给 .chart 的横向滚动条查看其余天数（默认停在最近的那一段）。
+// 小时视图只有 24 项，天然走不到这条分支。CHART_MAX_W 是防极端天数的兜底上限。
+// CHART_KEY 记住「上次渲染用的是哪个范围/多少天」——只有它变了才复位滚动位置，
+// 30 秒一次的轮询不动它，否则用户拖到一半会被弹回去。
+var CHART_VIS_DAYS=30, CHART_MAX_W=12000, CHART_KEY=null;
+// 图表几何常量。AXIS_W 是左侧固定轴列的宽；列内刻度**左对齐**在 x=0，于是「171M」这类
+// 刻度的首个字符与上方标题「每日词元构成」的首字左边缘齐平（v1.1.2 起）。此前轴列 66px、
+// 刻度右对齐在 AXIS_W-9，长短不一的刻度会在左边空出约 30px，被指「留白太多」。
+// 38 ≈ 最长刻度文本（「85.7M」，10.5px 字号下约 28px）+ 余量；万一字体更宽、被 .yaxis 的
+// overflow:hidden 切掉右端，加宽这个数即可。
+// PAD_L / PAD_R 是绘图区内部的左右留白，PAD_L 只留 10px 够最左侧那个斜排日期标签
+// 不被裁掉即可 —— 轴槽已经搬去 .yaxis，不再占绘图区。
+// renderChart 会把 AXIS_W 写到 #yaxis 的 style.width 上，所以这里改一处就够；
+// CSS 里 .yaxis 用的是 flex:0 0 auto（跟随内容宽），不用同步改。
+var AXIS_W=38, PAD_L=10, PAD_R=16;
 // 明细表默认日期降序（最新在前）；月度表默认月份降序（大月在上、小月在下）。
 // 有记忆时两者都被 loadSort() 覆盖。
 var SORT=loadSort(DAILY_SORT_KEY,{k:'date',d:-1},DAILY_SORT_KEYS);
@@ -241,7 +272,7 @@ function bindSortTh(t,onPick){
 var BASE=location.pathname.replace(/[^\/]*$/,'');
 // 前端版本号：改了这个文件就改这一行。后端版本号在 usage_server.py 的 BE_VER，
 // 由 /api/data 带过来，页头会同时显示两者（前后端各自计版本，互不牵连）。
-var FE_VER='v1.0.9';
+var FE_VER='v1.1.3';
 var tip=document.getElementById('tip');
 
 function fmt(n){ n=Number(n||0); return n.toLocaleString('en-US'); }
@@ -471,22 +502,38 @@ function renderChart(){
   var max=1;
   rows.forEach(function(d){ var t=(d.fresh||0)+(d.cached||0)+(d.output||0); if(t>max) max=t; });
   var n=rows.length||1;
+  var ybox=document.getElementById('yaxis');
   var box=document.getElementById('chart');
+  // Y 轴在滚动容器之外，所以先把左列的宽定死、再量绘图区的可用宽。反过来（先量后定）
+  // 首帧会按整幅宽多算一个 AXIS_W，把「本来铺得下」的 30 天也算成溢出。
+  ybox.style.width=AXIS_W+'px';
   var cw=box.clientWidth||900;
-  var w=Math.max(cw, Math.min(n*22, 8000));
-  var padL=66, padR=16, padT=14, padB=46;
-  var H=224, iw=w-padL-padR, ih=H-padT-padB;
+  var padT=14, padB=46, H=224;
+  // 视野固定：绘图区一屏铺满 CHART_VIS_DAYS 天，于是「每天占多少像素」恒等于
+  // (cw−PAD_L−PAD_R)/CHART_VIS_DAYS，与总天数无关 —— 这才是「视野固定」的准确含义。
+  // 天数超过它时按该日宽等比加宽画布，多出的天数交给 .chart 的横向滚动条；不超过时
+  // 画布恰好等于容器宽（铺满、不出滚动条）。CHART_MAX_W 是防极端天数的兜底。
+  var dayW=(cw-PAD_L-PAD_R)/CHART_VIS_DAYS;
+  var w=Math.round(Math.max(cw, n*dayW+PAD_L+PAD_R));
+  if(w>CHART_MAX_W) w=CHART_MAX_W;
+  var iw=w-PAD_L-PAD_R, ih=H-padT-padB;
   var bw=Math.min(34, iw/n*0.7);
-  var parts=[];
+  // 轴刻度和网格线分开画：刻度进 #yaxis（固定不动），网格线留在滚动的绘图 SVG 里。
+  // 两者共用同一组 y，轴才不会和柱子的参考线错位。刻度**不能**留在绘图 SVG 里 ——
+  // 那样向右拖动时 171M / 129M 会跟着滚出视野（v1.1.1 修的就是这个）。
+  // 刻度用 text-anchor="start" + x=0：左边缘贴住轴列左边缘；轴列与标题行 .ph 同为
+  // .panel 的直接子节点、标题 h2 又无左缩进，两者左边缘天然齐平（v1.1.2 对齐）。
+  var parts=[], yparts=[];
   parts.push('<svg width="'+w+'" height="'+H+'" viewBox="0 0 '+w+' '+H+'">');
+  yparts.push('<svg width="'+AXIS_W+'" height="'+H+'" viewBox="0 0 '+AXIS_W+' '+H+'">');
   for(var g=0; g<=4; g++){
     var y=padT+ih-ih*g/4, val=max*g/4;
-    parts.push('<line x1="'+padL+'" y1="'+y.toFixed(1)+'" x2="'+(w-padR)+'" y2="'+y.toFixed(1)+
+    parts.push('<line x1="'+PAD_L+'" y1="'+y.toFixed(1)+'" x2="'+(w-PAD_R)+'" y2="'+y.toFixed(1)+
       '" stroke="#eceef1" stroke-width="1"/>');
-    parts.push('<text x="'+(padL-9)+'" y="'+(y+4).toFixed(1)+'" text-anchor="end" font-size="10.5" fill="#9aa1ab">'+Mchart(val)+'</text>');
+    yparts.push('<text x="0" y="'+(y+4).toFixed(1)+'" text-anchor="start" font-size="10.5" fill="#9aa1ab">'+Mchart(val)+'</text>');
   }
   rows.forEach(function(d,i){
-    var cx=padL+iw*(i+0.5)/n;
+    var cx=PAD_L+iw*(i+0.5)/n;
     var f=d.fresh||0, c=d.cached||0, o=d.output||0;
     var y=padT+ih;
     var dTotal=d.total||(f+c+o);
@@ -514,18 +561,32 @@ function renderChart(){
     }
   });
   parts.push('</svg>');
+  yparts.push('</svg>');
   box.innerHTML=parts.join('');
+  ybox.innerHTML=yparts.join('');
+  // 溢出即横向滚动。只在「范围 / 天数」变化时把位置复位到最右（最近的一段），轮询重绘
+  // 沿用当前位置。scrollWidth 得等 DOM 落地后再读，这里同步赋值即可，不必等下一帧。
+  var ck=String(RANGE)+'|'+n+'|'+(hm?'h':'d');
+  if(ck!==CHART_KEY){
+    CHART_KEY=ck;
+    box.scrollLeft=box.scrollWidth-box.clientWidth;  // 未溢出时该值为 0；赋负值会被自动钳到 0
+  }
   var cd=focusDate(), sp=pickedSpan();
   var noteTxt;
   if(hm){ noteTxt=(cd||'—')+' 共 24 小时'; }
-  else if(sp){ noteTxt=sp.from.slice(5)+' ~ '+sp.to.slice(5)+'，'+rows.length+' 天'; }
-  else { noteTxt=n+' 天'; }
+  else if(sp){ noteTxt=sp.from.slice(5)+' ~ '+sp.to.slice(5)+'，'+rows.length+' 天'+(n>CHART_VIS_DAYS?'，可横向拖动':''); }
+  else { noteTxt=n+' 天'+(n>CHART_VIS_DAYS?'，可横向拖动':''); }
   document.getElementById('chartTitle').innerHTML=
     (hm?(RANGE==='today'?'今日分时词元构成':'当日分时词元构成'):'每日词元构成')+
     ' <small id="chartNote">（'+noteTxt+'）</small>';
-  document.getElementById('chartNoteBox').innerHTML= hm
+  var noteBox= hm
     ? '每根柱是<b>该小时</b>内全部 API 请求的词元总和。缓存命中部分是每轮重发的历史上下文，量大但单价最低；<b>非缓存输入 + 输出</b>才是该小时真正新增的计算量。'
     : '每根柱是该日<b>全部 API 请求的词元总和</b>。缓存命中部分每轮请求都要重发一遍，所以它在总量里占大头却最便宜；<b>非缓存输入 + 输出</b>才是当日真正新消耗的计算量。';
+  if(!hm && n>CHART_VIS_DAYS){
+    noteBox+='<br>可视区固定为 <b>'+CHART_VIS_DAYS+' 天</b>（当前是最新的 '+CHART_VIS_DAYS+
+      ' 天），拖动下方的横向滚动条可查看其余 '+(n-CHART_VIS_DAYS)+' 天。';
+  }
+  document.getElementById('chartNoteBox').innerHTML=noteBox;
 }
 
 function renderDaily(){
