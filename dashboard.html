@@ -69,11 +69,12 @@ body{background:var(--bg);color:var(--tx);font-size:14px;line-height:1.6;
 .chartrow{display:flex;align-items:flex-start}
 .yaxis{flex:0 0 auto;overflow:hidden}
 .yaxis svg{display:block}
-.chart{flex:1 1 auto;min-width:0;overflow-x:auto;scrollbar-width:thin;scrollbar-color:#c8ccd2 #f0f2f5}
-.chart::-webkit-scrollbar{height:10px}
-.chart::-webkit-scrollbar-track{background:#f0f2f5;border-radius:5px}
-.chart::-webkit-scrollbar-thumb{background:#c8ccd2;border-radius:5px}
-.chart::-webkit-scrollbar-thumb:hover{background:#a3aab4}
+/* 横向滚动条**走系统默认渲染**，与「每日明细」等 .scroll 表格容器的纵向滚动条同款同宽
+   （2026-09-23 用户要求：两处滚动条宽度保持一致）。
+   所以这里故意不写任何 ::-webkit-scrollbar / scrollbar-width 自定义样式 —— 一旦自绘，
+   宽度就被 CSS 写死，跟系统那套在宽窄、配色、圆角上必然对不上。
+   滚轮缩放的触发不依赖具体高度：靠运行时测 offsetHeight−clientHeight。 */
+.chart{flex:1 1 auto;min-width:0;overflow-x:auto}
 .chart svg{display:block}
 .bar{transition:opacity .12s}
 .bar:hover{opacity:.78}
@@ -233,7 +234,11 @@ var DATA=null, RANGE=7, LAST_RANGE=null;
 // 小时视图只有 24 项，天然走不到这条分支。CHART_MAX_W 是防极端天数的兜底上限。
 // CHART_KEY 记住「上次渲染用的是哪个范围/多少天」——只有它变了才复位滚动位置，
 // 30 秒一次的轮询不动它，否则用户拖到一半会被弹回去。
-var CHART_VIS_DAYS=30, CHART_MAX_W=12000, CHART_KEY=null;
+var CHART_VIS_DAYS=30, CHART_VIS_MIN=7, CHART_MAX_W=12000, CHART_KEY=null;
+// 当前视窗天数 visDays：把滚轮压在横向滚动条上无级调节，范围 [CHART_VIS_MIN, CHART_VIS_DAYS]，
+// 即 7~30 天。缩到 30 天就到顶 —— 再往回缩滚动条会消失，而滚动条一消失就没有缩放的入口了。
+// CHART_ZOOM 标记「本次渲染是滚轮缩放引起的」，renderChart 据此把视窗正中那根柱留在原处。
+var visDays=CHART_VIS_DAYS, CHART_ZOOM=false;
 // 图表几何常量。AXIS_W 是左侧固定轴列的宽；列内刻度**左对齐**在 x=0，于是「171M」这类
 // 刻度的首个字符与上方标题「每日词元构成」的首字左边缘齐平（v1.1.2 起）。此前轴列 66px、
 // 刻度右对齐在 AXIS_W-9，长短不一的刻度会在左边空出约 30px，被指「留白太多」。
@@ -244,6 +249,52 @@ var CHART_VIS_DAYS=30, CHART_MAX_W=12000, CHART_KEY=null;
 // renderChart 会把 AXIS_W 写到 #yaxis 的 style.width 上，所以这里改一处就够；
 // CSS 里 .yaxis 用的是 flex:0 0 auto（跟随内容宽），不用同步改。
 var AXIS_W=38, PAD_L=10, PAD_R=16;
+// 最近一次渲染的几何参数，供 syncAxis() 在横向滚动后重算刻度用 —— 横向滚动只影响刻度
+// 数字，柱子与网格线都不变，所以不必整图重绘。
+var CHART_GEO=null;
+// 视窗内「看得见的那几根柱」的峰值。v0/v1 由横向位置 sl 反推：第 i 根柱占
+// [PAD_L+iw*i/n, PAD_L+iw*(i+1)/n]，与视窗 [sl, sl+cw] 求交。纵轴刻度与柱高都用它，
+// 所以放大后柱子明显变高、细节看得清；代价是横向滚动时刻度数字会跟着变。
+// iw<=0（容器被压到没有绘图区）时退回 1，避免除零。
+function visibleMaxOf(sl,n,iw,cw,rows){
+  if(!(iw>0)) return 1;
+  var v0=Math.min(n-1, Math.max(0, Math.floor((sl-PAD_L)*n/iw)));
+  var v1=Math.min(n-1, Math.max(v0, Math.ceil((sl+cw-PAD_L)*n/iw)-1));
+  // 循环上界再夹一次 rows.length：RANGE 指向一个没有数据的区间时 rows 为空、n 被兜底成 1，
+  // 这时不能去读 rows[0]（早期实现用 rows.forEach，天然不会踩到这类空数组）。
+  var max=1;
+  for(var q=v0; q<=v1 && q<rows.length; q++){
+    var tv=(rows[q].fresh||0)+(rows[q].cached||0)+(rows[q].output||0);
+    if(tv>max) max=tv;
+  }
+  return max;
+}
+// 纵轴刻度单独生成：刻度进固定的 #yaxis，网格线留在滚动的绘图 SVG 里。
+// 刻度用 text-anchor="start" + x=0：左边缘贴住轴列左边缘；轴列与标题行 .ph 同为
+// .panel 的直接子节点、标题 h2 又无左缩进，两者左边缘天然齐平（v1.1.2 对齐）。
+function axisSVG(max,padT,ih,H){
+  var out=['<svg width="'+AXIS_W+'" height="'+H+'" viewBox="0 0 '+AXIS_W+' '+H+'">'];
+  for(var g=0; g<=4; g++){
+    var y=padT+ih-ih*g/4;
+    out.push('<text x="0" y="'+(y+4).toFixed(1)+'" text-anchor="start" font-size="10.5" fill="#9aa1ab">'+Mchart(max*g/4)+'</text>');
+  }
+  out.push('</svg>');
+  return out.join('');
+}
+// 横向滚动（拖动滚动条 / 滚轮平移 / 触摸板横滑）后，把纵轴刻度对齐到新的可见范围。
+// 只重写 #yaxis、绝不碰 #chart —— 因此不会再触发 scroll 事件，不存在重入风险；
+// 峰值没变时直接返回，拖动过程里绝大多数帧都不必动 DOM。
+// （v1.2.0 引入「按可见范围取峰值」时漏了这一步：拖动滚动条不会触发重绘，刻度会一直
+//   停在旧值，直到下一次轮询才发现对不上。）
+function syncAxis(){
+  var g=CHART_GEO;
+  if(!g) return;
+  var box=document.getElementById('chart');
+  var max=visibleMaxOf(box.scrollLeft, g.n, g.iw, g.cw, g.rows);
+  if(max===g.max) return;
+  g.max=max;
+  document.getElementById('yaxis').innerHTML=axisSVG(max, g.padT, g.ih, g.H);
+}
 // 明细表默认日期降序（最新在前）；月度表默认月份降序（大月在上、小月在下）。
 // 有记忆时两者都被 loadSort() 覆盖。
 var SORT=loadSort(DAILY_SORT_KEY,{k:'date',d:-1},DAILY_SORT_KEYS);
@@ -272,7 +323,7 @@ function bindSortTh(t,onPick){
 var BASE=location.pathname.replace(/[^\/]*$/,'');
 // 前端版本号：改了这个文件就改这一行。后端版本号在 usage_server.py 的 BE_VER，
 // 由 /api/data 带过来，页头会同时显示两者（前后端各自计版本，互不牵连）。
-var FE_VER='v1.1.3';
+var FE_VER='v1.3.2';
 var tip=document.getElementById('tip');
 
 function fmt(n){ n=Number(n||0); return n.toLocaleString('en-US'); }
@@ -499,38 +550,63 @@ function renderChart(){
   var hm=isHourMode();
   var rows=hm?todayHours():sliceDays();
   var label=function(r){ return hm?r.hour:r.date.slice(5); };
-  var max=1;
-  rows.forEach(function(d){ var t=(d.fresh||0)+(d.cached||0)+(d.output||0); if(t>max) max=t; });
   var n=rows.length||1;
   var ybox=document.getElementById('yaxis');
   var box=document.getElementById('chart');
+  // 滚动位置必须在这里读干净：下面重设 innerHTML 后 scrollLeft 会被钳回 0，事后再读就晚了。
+  var prevSL=box.scrollLeft, prevSW=box.scrollWidth;
   // Y 轴在滚动容器之外，所以先把左列的宽定死、再量绘图区的可用宽。反过来（先量后定）
   // 首帧会按整幅宽多算一个 AXIS_W，把「本来铺得下」的 30 天也算成溢出。
   ybox.style.width=AXIS_W+'px';
   var cw=box.clientWidth||900;
   var padT=14, padB=46, H=224;
-  // 视野固定：绘图区一屏铺满 CHART_VIS_DAYS 天，于是「每天占多少像素」恒等于
-  // (cw−PAD_L−PAD_R)/CHART_VIS_DAYS，与总天数无关 —— 这才是「视野固定」的准确含义。
-  // 天数超过它时按该日宽等比加宽画布，多出的天数交给 .chart 的横向滚动条；不超过时
-  // 画布恰好等于容器宽（铺满、不出滚动条）。CHART_MAX_W 是防极端天数的兜底。
-  var dayW=(cw-PAD_L-PAD_R)/CHART_VIS_DAYS;
+  // 范围 / 天数变了 → 复位缩放与滚动位置（回到视窗 30 天、停在最右）；否则沿用当前位置；
+  // 若是滚轮缩放引起的渲染，就以「视窗正中那根柱」为锚对齐（见下面 sl 的算法）。
+  var ck=String(RANGE)+'|'+n+'|'+(hm?'h':'d');
+  var keep;
+  if(ck!==CHART_KEY){ CHART_KEY=ck; visDays=CHART_VIS_DAYS; keep='right'; }
+  else if(CHART_ZOOM){ keep='anchor'; }
+  else { keep='keep'; }
+  CHART_ZOOM=false;
+  // 小时视图只有 24 项、天然铺得下，视窗天数就取 n；按天模式才受 visDays 控制。
+  var vd=hm?n:visDays;
+  // 视野固定：绘图区一屏铺满 vd 天，于是「每天占多少像素」恒等于 (cw−PAD_L−PAD_R)/vd，
+  // 与总天数无关 —— 这才是「视野固定」的准确含义。天数超过它时按该日宽等比加宽画布，
+  // 多出的天数交给 .chart 的横向滚动条；不超过时画布恰好等于容器宽（铺满、不出滚动条）。
+  // CHART_MAX_W 是防极端天数的兜底。
+  var dayW=(cw-PAD_L-PAD_R)/vd;
   var w=Math.round(Math.max(cw, n*dayW+PAD_L+PAD_R));
   if(w>CHART_MAX_W) w=CHART_MAX_W;
   var iw=w-PAD_L-PAD_R, ih=H-padT-padB;
-  var bw=Math.min(34, iw/n*0.7);
+  // 柱宽上限 56 是给放大留的余量：原上限 34 是按「视窗 30 天」定的，放大到 7 天时每天占
+  // 100px 以上，还卡在 34 会让柱子又稀又瘦，失去放大的意义。
+  var bw=Math.min(56, iw/n*0.7);
+  // 本次要落到的横向滚动位置。上界用算术值 w−cw，而不是读 box.scrollWidth —— 此刻
+  // innerHTML 还没换，DOM 上的宽度仍是上一帧的。
+  var maxSL=Math.max(0, w-cw), sl;
+  if(keep==='right'){
+    sl=maxSL;                              // 溢出时停在最右（最近的一段）；未溢出时它就是 0
+  }else if(keep==='anchor'){
+    // 缩放前视窗正中那一点对应的浮点柱索引：第 i 根柱中心 = PAD_L+iwOld*(i+0.5)/n，反解得 i；
+    // 再让同一个 i 落在缩放后的视窗正中 —— 这就是「以视窗正中为中心缩放」。
+    var iwOld=Math.max(1, prevSW-PAD_L-PAD_R);
+    var fr=((prevSL+cw/2)-PAD_L)*n/iwOld-0.5;
+    sl=PAD_L+iw*(fr+0.5)/n-cw/2;
+  }else{
+    sl=prevSL;
+  }
+  sl=Math.max(0, Math.min(sl, maxSL));
+  // 纵轴按「视窗内看得见的柱子」取峰值算（算法与 syncAxis 共用 visibleMaxOf）。
+  var max=visibleMaxOf(sl, n, iw, cw, rows);
   // 轴刻度和网格线分开画：刻度进 #yaxis（固定不动），网格线留在滚动的绘图 SVG 里。
   // 两者共用同一组 y，轴才不会和柱子的参考线错位。刻度**不能**留在绘图 SVG 里 ——
   // 那样向右拖动时 171M / 129M 会跟着滚出视野（v1.1.1 修的就是这个）。
-  // 刻度用 text-anchor="start" + x=0：左边缘贴住轴列左边缘；轴列与标题行 .ph 同为
-  // .panel 的直接子节点、标题 h2 又无左缩进，两者左边缘天然齐平（v1.1.2 对齐）。
-  var parts=[], yparts=[];
+  var parts=[];
   parts.push('<svg width="'+w+'" height="'+H+'" viewBox="0 0 '+w+' '+H+'">');
-  yparts.push('<svg width="'+AXIS_W+'" height="'+H+'" viewBox="0 0 '+AXIS_W+' '+H+'">');
   for(var g=0; g<=4; g++){
-    var y=padT+ih-ih*g/4, val=max*g/4;
+    var y=padT+ih-ih*g/4;
     parts.push('<line x1="'+PAD_L+'" y1="'+y.toFixed(1)+'" x2="'+(w-PAD_R)+'" y2="'+y.toFixed(1)+
       '" stroke="#eceef1" stroke-width="1"/>');
-    yparts.push('<text x="0" y="'+(y+4).toFixed(1)+'" text-anchor="start" font-size="10.5" fill="#9aa1ab">'+Mchart(val)+'</text>');
   }
   rows.forEach(function(d,i){
     var cx=PAD_L+iw*(i+0.5)/n;
@@ -561,30 +637,31 @@ function renderChart(){
     }
   });
   parts.push('</svg>');
-  yparts.push('</svg>');
   box.innerHTML=parts.join('');
-  ybox.innerHTML=yparts.join('');
-  // 溢出即横向滚动。只在「范围 / 天数」变化时把位置复位到最右（最近的一段），轮询重绘
-  // 沿用当前位置。scrollWidth 得等 DOM 落地后再读，这里同步赋值即可，不必等下一帧。
-  var ck=String(RANGE)+'|'+n+'|'+(hm?'h':'d');
-  if(ck!==CHART_KEY){
-    CHART_KEY=ck;
-    box.scrollLeft=box.scrollWidth-box.clientWidth;  // 未溢出时该值为 0；赋负值会被自动钳到 0
-  }
+  ybox.innerHTML=axisSVG(max, padT, ih, H);
+  // 存下这一帧的几何，供 syncAxis() 在横向滚动后重算刻度。必须赶在下面那句
+  // box.scrollLeft=sl 之前就位 —— 那次赋值在真实浏览器里会触发 scroll。
+  CHART_GEO={n:n, iw:iw, cw:cw, rows:rows, padT:padT, ih:ih, H:H, max:max};
+  // 溢出即横向滚动。位置已在上面按「复位到最右 / 以视窗正中为锚 / 沿用当前」算成 sl，
+  // 这里补写回去 —— 重设 innerHTML 会把 scrollLeft 钳回 0，所以必须显式落一次。
+  box.scrollLeft=sl;
   var cd=focusDate(), sp=pickedSpan();
   var noteTxt;
   if(hm){ noteTxt=(cd||'—')+' 共 24 小时'; }
-  else if(sp){ noteTxt=sp.from.slice(5)+' ~ '+sp.to.slice(5)+'，'+rows.length+' 天'+(n>CHART_VIS_DAYS?'，可横向拖动':''); }
-  else { noteTxt=n+' 天'+(n>CHART_VIS_DAYS?'，可横向拖动':''); }
+  else if(sp){ noteTxt=sp.from.slice(5)+' ~ '+sp.to.slice(5)+'，'+rows.length+' 天'+(n>vd?'，可横向拖动':''); }
+  else { noteTxt=n+' 天'+(n>vd?'，可横向拖动':''); }
   document.getElementById('chartTitle').innerHTML=
     (hm?(RANGE==='today'?'今日分时词元构成':'当日分时词元构成'):'每日词元构成')+
     ' <small id="chartNote">（'+noteTxt+'）</small>';
   var noteBox= hm
     ? '每根柱是<b>该小时</b>内全部 API 请求的词元总和。缓存命中部分是每轮重发的历史上下文，量大但单价最低；<b>非缓存输入 + 输出</b>才是该小时真正新增的计算量。'
     : '每根柱是该日<b>全部 API 请求的词元总和</b>。缓存命中部分每轮请求都要重发一遍，所以它在总量里占大头却最便宜；<b>非缓存输入 + 输出</b>才是当日真正新消耗的计算量。';
-  if(!hm && n>CHART_VIS_DAYS){
-    noteBox+='<br>可视区固定为 <b>'+CHART_VIS_DAYS+' 天</b>（当前是最新的 '+CHART_VIS_DAYS+
-      ' 天），拖动下方的横向滚动条可查看其余 '+(n-CHART_VIS_DAYS)+' 天。';
+  // 「（当前是最新的 N 天）」只在视窗确实贴住最右端时才成立；缩放或拖到中段后这句会变成
+  // 假话，所以按实际位置决定要不要说 —— 未缩放且停在最右时，输出与改动前逐字一致。
+  var vdr=Math.round(vd), atRight=(sl+cw)>=w-1;
+  if(!hm && n>vdr){
+    noteBox+='<br>可视区显示 <b>'+vdr+' 天</b>'+(atRight?'（当前是最新的 '+vdr+' 天）':'')+
+      '，鼠标置于下方横向滚动条上滚轮可缩放可视区范围。';
   }
   document.getElementById('chartNoteBox').innerHTML=noteBox;
 }
@@ -1035,4 +1112,72 @@ window.addEventListener('resize',function(){
   clearTimeout(rt);
   rt=setTimeout(function(){ renderChart(); }, 160);
 });
+
+// 「每日词元构成」的滚轮：按光标落点分两种行为 ——
+//   ① 压在下方横向滚动条那条细条上 → **缩放**视窗天数（无级，7~30 天）：以视窗正中那根柱
+//      为锚对齐，所以放大是向中间收拢、不往一侧偏；
+//   ② 落在柱状图区域内 → **左右平移**可视区（等价于拖动滚动条），向下滚看更晚的日期。
+// 两者都只在「确实有横向滚动条」时生效；没有溢出时一律放行、页面照常纵向滚动。
+//
+// 顶到边界之后滚轮归谁（2026-09-23 用户要求，与「每日明细」那种原生滚动容器的手感对齐）：
+//   连续滚 → 吞掉事件：图表不动，页面也不动。不吞的话，光标停在图表上继续滚会让整个主页面
+//   突然上下跳，用户明确说这样体验很差；
+//   **停顿一下再滚** → 把滚轮交还给页面，页面开始上下滚。判「停顿」只看相邻两次滚轮事件的
+//   时间间隔（WHEEL_PAUSE），鼠标不用移动；交还之后只要还停在边界就一直归页面；
+//   而一旦反向滚回图表内部（那边仍有余量），立刻重新夺回 —— 所以「到顶停顿后反着滚」仍然
+//   是滚图表，不会把页面往回带。
+// 「光标是否压在滚动条上」用几何判断：clientHeight 是内容区高度（不含横向滚动条），
+// offsetHeight 含它，两者之差就是滚动条高度；没有溢出时差为 0。
+var WHEEL_PAUSE=250;   // ms：两次滚轮间隔超过它，就算「停顿过」
+(function(){
+  var box=document.getElementById('chart');
+  if(!box || !box.addEventListener) return;
+  var lastTs=0, gap=1e9, edgeHeld=false, outer=false;
+  // 边界处的滚轮归属：返回 true = 这一次让给页面（调用方直接 return，别 preventDefault）；
+  // 返回 false = 已经吞掉这一次（页面不动），图表也推不动了。
+  function handOff(e){
+    if(outer) return true;                                       // 已交还 → 保持放行，页面继续滚
+    if(edgeHeld && gap>WHEEL_PAUSE){ outer=true; return true; }  // 上一次也卡边界 + 这次停过手
+    edgeHeld=true;                                               // 还在连续滚 → 接着吞
+    e.preventDefault();
+    return false;
+  }
+  box.addEventListener('wheel',function(e){
+    var sbH=box.offsetHeight-box.clientHeight;             // 横向滚动条高度；无溢出时为 0
+    if(sbH<=0) return;                                     // 没溢出 → 完全不干预
+    var ts=(typeof e.timeStamp==='number' && e.timeStamp) ? e.timeStamp : Date.now();
+    gap=ts-lastTs; lastTs=ts;
+    var dy=e.deltaY||0, dx=e.deltaX||0;
+    if(e.deltaMode===1){ dy*=16; dx*=16; }                 // 按「行」报的（Firefox）折算成像素
+    else if(e.deltaMode===2){ dy*=100; dx*=100; }          // 按「页」报的
+    if(!dy && !dx) return;
+    if(e.clientY-box.getBoundingClientRect().top>=box.clientHeight){
+      // ① 压在横向滚动条上 → 缩放。以横向为主的手势（触摸板双指横滑）不当作缩放。
+      if(Math.abs(dy)<=Math.abs(dx)) return;
+      var next=visDays*Math.pow(1.002,dy);                 // 向上滚放大（视窗天数变小），向下滚缩小
+      if(next<CHART_VIS_MIN) next=CHART_VIS_MIN;
+      if(next>CHART_VIS_DAYS) next=CHART_VIS_DAYS;
+      if(Math.abs(next-visDays)<1e-6){ handOff(e); return; }   // 已经顶在 7 天 / 30 天上了
+      outer=false; edgeHeld=false;                         // 缩放真的动了 → 重新夺回滚轮
+      e.preventDefault();
+      visDays=next;
+      CHART_ZOOM=true;                                     // 告诉 renderChart：这次要把视窗中心留住
+      renderChart();
+      return;
+    }
+    // ② 落在柱状图区域内 → 左右平移。横向手势优先取 deltaX（触摸板双指横滑很自然），
+    //    否则把纵向滚折算成横向：一格滚轮约 100px，约等于 1/9 个视窗宽。
+    var move=(Math.abs(dx)>Math.abs(dy)) ? dx : dy;
+    var maxSL=Math.max(0, box.scrollWidth-box.clientWidth);
+    var target=Math.max(0, Math.min(box.scrollLeft+move, maxSL));
+    if(Math.abs(target-box.scrollLeft)<0.5){ handOff(e); return; }   // 已顶到最左 / 最右
+    outer=false; edgeHeld=false;                           // 图表能动 → 重新夺回滚轮
+    e.preventDefault();
+    box.scrollLeft=target;
+    syncAxis();                                            // 纵轴刻度跟着新的可见范围走
+  },{passive:false});
+  // 横向滚动（拖动滚动条 / 上面那条滚轮平移 / 触摸板）后同步纵轴刻度。只重写 #yaxis、
+  // 不碰 #chart，所以不会再触发 scroll，无重入风险。
+  box.addEventListener('scroll',syncAxis);
+})();
 </script></body></html>
