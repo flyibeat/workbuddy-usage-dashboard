@@ -75,7 +75,7 @@ ARGV = _normalize_argv(sys.argv)
 #
 # 「改了代码就改这里」是唯一的版本来源 —— 不要靠外部变量或 git 标签注入，
 # 否则代码与版本号会各说各话。WB_VERSION 仅作临时覆盖（验证、临时构建）用。
-BE_VER = os.environ.get('WB_VERSION', '').strip() or 'v1.0.3'
+BE_VER = os.environ.get('WB_VERSION', '').strip() or 'v1.0.4'
 
 # ---- 数据根定位 -------------------------------------------------------------
 #
@@ -230,6 +230,11 @@ def _res_dir():
 APPDIR = _exe_dir()          # 数据落这里：缓存、日志、可选的外部前端
 RESDIR = _res_dir()          # 随包资源读这里：内嵌的 dashboard.html 兜底副本
 CACHE_PATH = os.path.join(APPDIR, 'scan-cache.json')
+# scan-cache.json 的结构版本：**解析口径一改就要 +1**。
+# load_cache() 只认当前版本，读到旧版本直接丢弃 → 下一次 build() 全量重解析。
+# 没有这道闸门时踩过（2026-09-25）：改了 parse_file 的取值口径、换了新 exe 重启，
+# 数字一动不动 —— 因为缓存里存的是**上次解析出来的结果**，文件签名没变就不会重解析。
+CACHE_VER = 2
 LOG_PATH = os.path.join(APPDIR, 'server.log')
 PORT = int(os.environ.get('WB_USAGE_PORT', '8791'))
 BIND = os.environ.get('WB_USAGE_BIND', '127.0.0.1')
@@ -397,6 +402,34 @@ def _num(v, cast):
     return None
 
 
+def _cache_hit(raw):
+    """缓存命中词元 —— rawUsage 里同一份数据有两个镜像键，两个都要认。
+
+      * DeepSeek 系通道（deepseek-* / hy* / glm-*）→ `prompt_cache_hit_tokens`
+      * 走 OpenAI 兼容协议的**接入通道**（`gpt-5.6-sol` / `mimo-v2.6-pro` 等）
+        → 不产出上面那个键，命中数只写在 `prompt_tokens_details.cached_tokens`
+
+    只读前者会把后者的命中**整片记成 0**，并把它们的全部输入算进「非缓存输入」——
+    2026-09-25 实测：`gpt-5.6-sol` 输入 1.04 亿中 9,418 万（90.2%）是命中却显示 0，
+    全局命中率被压到 89.60%（真实 95.26%）。
+
+    实测 13,653 条同时带两键的记录上两者**数值 100% 相同**，所以「先主键、
+    为 0 再兜底」既不会重复计数也不会漏。另注：顶层的 `cache_read_input_tokens` /
+    `cached_tokens` / `prompt_cache_write_tokens` 三键**恒为 0**，是占位符，不能当数据源。
+
+    返回 int；主键若是脏数据（dict / 乱码字符串）仍返回 None 交给调用方按脏记录上报 ——
+    保持 _num 的既有语义，不把「脏」静默降级成「0」。
+    """
+    v = _num(raw.get('prompt_cache_hit_tokens'), int)
+    if v:
+        return v
+    ptd = raw.get('prompt_tokens_details')
+    alt = _num(ptd.get('cached_tokens'), int) if isinstance(ptd, dict) else None
+    if alt:                     # 主键缺失或确实为 0，而兜底键有非零值 → 用兜底值
+        return alt
+    return v                    # 兜底键也没给出可用值：0 照旧，None（主键脏）照旧上报
+
+
 def parse_file(fp):
     """解析单个 jsonl，返回 (记录列表, 被跳过的脏记录数)。
 
@@ -443,7 +476,7 @@ def parse_file(fp):
             inp = _num(u.get('inputTokens'), int)
             out = _num(u.get('outputTokens'), int)
             tot = _num(u.get('totalTokens'), int)
-            cached = _num(raw.get('prompt_cache_hit_tokens'), int)
+            cached = _cache_hit(raw)
             credit = _num(raw.get('credit'), float)
             if inp is None or out is None or tot is None or cached is None or credit is None:
                 bad += 1
@@ -464,7 +497,7 @@ def load_cache():
     try:
         with open(CACHE_PATH, 'r', encoding='utf-8') as fh:
             obj = json.load(fh)
-        if isinstance(obj, dict) and obj.get('v') == 1:
+        if isinstance(obj, dict) and obj.get('v') == CACHE_VER:
             return {k: v for k, v in (obj.get('files') or {}).items()}
     except Exception:
         pass
@@ -475,7 +508,7 @@ def save_cache(cache):
     tmp = CACHE_PATH + '.tmp'
     try:
         with open(tmp, 'w', encoding='utf-8') as fh:
-            json.dump({'v': 1, 'files': cache}, fh, ensure_ascii=False)
+            json.dump({'v': CACHE_VER, 'files': cache}, fh, ensure_ascii=False)
         os.replace(tmp, CACHE_PATH)
     except Exception as e:
         log('缓存写入失败: %s' % e)
