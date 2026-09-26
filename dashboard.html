@@ -323,7 +323,7 @@ function bindSortTh(t,onPick){
 var BASE=location.pathname.replace(/[^\/]*$/,'');
 // 前端版本号：改了这个文件就改这一行。后端版本号在 usage_server.py 的 BE_VER，
 // 由 /api/data 带过来，页头会同时显示两者（前后端各自计版本，互不牵连）。
-var FE_VER='v1.3.4';
+var FE_VER='v1.3.5';
 var tip=document.getElementById('tip');
 
 function fmt(n){ n=Number(n||0); return n.toLocaleString('en-US'); }
@@ -527,9 +527,14 @@ function renderCards(){
         if(prevD) cards.push(['昨日词元', Mlabel(prevD.total), fmt(prevD.total)+' 词元']);
       }
       cards.push(['范围日均', Mlabel(total/n), '按 '+n+' 天计']);
+      // 多天视图的词元三分量：总词元 = 缓存命中输入 + 非缓存输入 + 输出词元。
+      // 「非缓存计算量」= 非缓存输入 + 输出，紧跟着把它拆开的两张卡（供应方口径）
+      // 以及缓存命中输入（大头但单价最低）。标题与图表图例、明细表列名保持一致。
       cards.push(['非缓存计算量', Mlabel(fresh+out),
         '输入 '+Mlabel(fresh)+' ＋ 输出 '+Mlabel(out)]);
+      cards.push(['非缓存输入', Mlabel(fresh), '日均 '+Mlabel(fresh/n)]);
       cards.push(['输出词元', Mlabel(out), '日均 '+Mlabel(out/n)]);
+      cards.push(['缓存命中输入', Mlabel(cached), '日均 '+Mlabel(cached/n)]);
       cards.push(['缓存命中率', rate.toFixed(1)+'%',
         '命中 '+Mlabel(cached)+' ／ 输入 '+Mlabel(input)]);
       cards.push(['API 请求数', fmt(req), '日均 '+(req/n).toFixed(0)+' 次']);
