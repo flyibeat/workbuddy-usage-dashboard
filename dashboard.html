@@ -323,7 +323,7 @@ function bindSortTh(t,onPick){
 var BASE=location.pathname.replace(/[^\/]*$/,'');
 // 前端版本号：改了这个文件就改这一行。后端版本号在 usage_server.py 的 BE_VER，
 // 由 /api/data 带过来，页头会同时显示两者（前后端各自计版本，互不牵连）。
-var FE_VER='v1.3.2';
+var FE_VER='v1.3.4';
 var tip=document.getElementById('tip');
 
 function fmt(n){ n=Number(n||0); return n.toLocaleString('en-US'); }
@@ -666,9 +666,23 @@ function renderChart(){
   document.getElementById('chartNoteBox').innerHTML=noteBox;
 }
 
+// 「缓存命中 ÷ 该行总输入」的百分比（0~100）。分母为 0 时返回 null，由 pctCell() 显示成「—」——
+// 0/0 是 NaN，直接 toFixed 会印出「NaN%」。明细表与模型分布表共用这一对函数。
+function hitPct(cached, fresh){
+  var inp=(cached||0)+(fresh||0);
+  return inp>0 ? (cached/inp*100) : null;
+}
+function pctCell(v){ return v==null ? '—' : v.toFixed(1)+'%'; }
+
 function renderDaily(){
   var hm=isHourMode();
-  var rows=hm?todayHours():sliceDays().slice();
+  // 派生列（hit）必须挂在行的副本上：todayHours() 直接返回 DATA 内部数组，
+  // 往元素上写字段会污染数据源，下次渲染/其他表都会看到这个多余属性。
+  var rows=(hm?todayHours():sliceDays()).map(function(d){
+    var o={}; for(var k in d){ o[k]=d[k]; }
+    o.hit=hitPct(d.cached,d.fresh);
+    return o;
+  });
   var defaultKey=hm?'hour':'date';
   if((hm&&SORT.k==='date')||(!hm&&SORT.k==='hour')){ SORT={k:defaultKey,d:hm?1:-1}; saveSort(DAILY_SORT_KEY,SORT); }
   rows.sort(function(a,b){
@@ -684,7 +698,8 @@ function renderDaily(){
     '不足 2% 的按 2% 显示。';
   var tipAttr=esc(tipText).replace(/\n/g,'&#10;');
   var cols=[[defaultKey,hm?'时段':'日期'],['req','请求数'],['fresh','非缓存输入'],
-            ['cached','缓存命中'],['output','输出词元'],['total','总词元'],['credit','积分']];
+            ['cached','缓存命中'],['hit','缓存命中占比'],
+            ['output','输出词元'],['total','总词元'],['credit','积分']];
   var html='<thead><tr>'+cols.map(function(c){
     return '<th data-k="'+c[0]+'" style="cursor:pointer">'+c[1]+(SORT.k===c[0]?(SORT.d>0?' ▲':' ▼'):'')+'</th>';
   }).join('')+'<th class="help" title="'+tipAttr+'">本表对比</th></tr></thead><tbody>';
@@ -694,6 +709,7 @@ function renderDaily(){
     html+='<tr'+(zero?' style="color:#c8ccd2"':'')+'><td>'+key+'</td><td>'+fmt(d.req)+
       '</td><td title="'+fmt(d.fresh)+' 词元">'+Mx(d.fresh)+'</td>'+
       '<td title="'+fmt(d.cached)+' 词元">'+Mx(d.cached)+'</td>'+
+      '<td title="占总输入">'+pctCell(d.hit)+'</td>'+
       '<td title="'+fmt(d.output)+' 词元">'+Mx(d.output)+'</td>'+
       '<td title="'+fmt(d.total)+' 词元"><b>'+Mx(d.total)+'</b></td>'+
       '<td>'+(d.credit?d.credit.toFixed(1):'—')+'</td>'+
@@ -713,10 +729,15 @@ function renderDaily(){
 }
 
 // 模型分布的列定义：顺序即表头顺序，键名同时是排序键（与 th 的 data-k 对应）。
-// 'pct'（占比）是派生列（该行 total ÷ 本表 Σtotal），排序时归到 'total' —— 两者必然同序，
-// 但给它一个自己的键，点「占比」时指示器才会落在占比列上，而不是跑到「总词元」那列。
+// 两个派生列口径不同，别混：
+//   'hit' = 该行 cached ÷ 该行输入合计（fresh+cached），衡量「这个模型的缓存命中率」，0~100
+//   'pct' = 该行 total ÷ 本表 Σtotal，衡量「这个模型占全部词元的比重」
+// 'pct' 与 'total' 必然同序，排序时归到 'total' —— 但给它一个自己的键，点「占比」时
+// 指示器才会落在占比列上，而不是跑到「总词元」那列。'hit' 与任何列都不同序，
+// 所以它必须是行上的真实字段（在 renderModels 聚合后现算），排序才读得到。
 function modelCols(){
   return [['model','模型'],['req','请求数'],['fresh','非缓存输入'],['cached','缓存命中'],
+          ['hit','缓存命中占比'],
           ['output','输出'],['total','总词元'],['pct','占比'],['credit','积分']];
 }
 function renderModels(){
@@ -740,6 +761,8 @@ function renderModels(){
     o.total+=m.total; o.credit+=m.credit;
   });
   var list=Object.keys(by).map(function(k){return by[k];});
+  // 派生列 hit 用聚合后的合计现算（不是各行比例的再平均），与明细表同口径
+  list.forEach(function(x){ x.hit=hitPct(x.cached,x.fresh); });
   var sum=list.reduce(function(a,x){return a+x.total;},0)||1;
   var mkey=(MODELSORT.k==='pct')?'total':MODELSORT.k;   // 占比 → 按总词元排
   list.sort(function(a,b){
@@ -755,6 +778,7 @@ function renderModels(){
     html+='<tr><td class="mono">'+esc(x.model)+'</td><td>'+fmt(x.req)+
       '</td><td title="'+fmt(x.fresh)+' 词元">'+Mx(x.fresh)+'</td>'+
       '<td title="'+fmt(x.cached)+' 词元">'+Mx(x.cached)+'</td>'+
+      '<td title="占总输入">'+pctCell(x.hit)+'</td>'+
       '<td title="'+fmt(x.output)+' 词元">'+Mx(x.output)+'</td>'+
       '<td title="'+fmt(x.total)+' 词元"><b>'+Mx(x.total)+'</b></td>'+
       '<td>'+(x.total/sum*100).toFixed(1)+'%</td>'+
