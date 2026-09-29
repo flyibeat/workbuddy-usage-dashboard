@@ -323,7 +323,7 @@ function bindSortTh(t,onPick){
 var BASE=location.pathname.replace(/[^\/]*$/,'');
 // 前端版本号：改了这个文件就改这一行。后端版本号在 usage_server.py 的 BE_VER，
 // 由 /api/data 带过来，页头会同时显示两者（前后端各自计版本，互不牵连）。
-var FE_VER='v1.3.5';
+var FE_VER='v1.3.6';
 var tip=document.getElementById('tip');
 
 function fmt(n){ n=Number(n||0); return n.toLocaleString('en-US'); }
@@ -513,7 +513,8 @@ function renderCards(){
       cards.push([dl+'输出词元', Mlabel(last.output),
         last.total?('占'+dl+'总词元 '+(last.output/last.total*100).toFixed(1)+'%'):'']);
       cards.push([dl+' API 请求数', fmt(last.req), '']);
-      if(credit>0) cards.push([dl+'积分', credit.toFixed(1), '仅计量通道才计分']);
+      // 积分卡恒定显示：0 也要出卡。隐藏 0 会让「当日未走计量通道」和「后台没数据」长得一样。
+      cards.push([dl+'积分', credit.toFixed(1), '仅计量通道才计分']);
     }
   } else {
     var lastD=DATA.days[DATA.days.length-1], prevD=DATA.days[DATA.days.length-2];
@@ -538,7 +539,9 @@ function renderCards(){
       cards.push(['缓存命中率', rate.toFixed(1)+'%',
         '命中 '+Mlabel(cached)+' ／ 输入 '+Mlabel(input)]);
       cards.push(['API 请求数', fmt(req), '日均 '+(req/n).toFixed(0)+' 次']);
-      if(credit>0) cards.push(['积分合计', credit.toFixed(1), '仅计量通道才计分']);
+      // 同小时视图：积分合计恒定显示，0 也要出卡（与明细 / 模型 / 会话 / 月度四张表的
+      // credit 列口径一致 —— 那四处在 credit 为 0 时显示「—」，不整列消失）。
+      cards.push(['积分合计', credit.toFixed(1), '仅计量通道才计分']);
     }
   }
   document.getElementById('cards').innerHTML=cards.map(function(c){
