@@ -33,7 +33,7 @@ import datetime
 import collections
 import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 
 # ---- 控制台编码兜底 ---------------------------------------------------------
 #
@@ -75,7 +75,7 @@ ARGV = _normalize_argv(sys.argv)
 #
 # 「改了代码就改这里」是唯一的版本来源 —— 不要靠外部变量或 git 标签注入，
 # 否则代码与版本号会各说各话。WB_VERSION 仅作临时覆盖（验证、临时构建）用。
-BE_VER = os.environ.get('WB_VERSION', '').strip() or 'v1.0.4'
+BE_VER = os.environ.get('WB_VERSION', '').strip() or 'v1.0.6'
 
 # ---- 数据根定位 -------------------------------------------------------------
 #
@@ -212,6 +212,30 @@ PROJECTS = os.path.join(WB, 'projects')
 DB = os.path.join(WB, 'workbuddy.db')
 
 
+def sqlite_ro_uri(path):
+    """把一个文件路径转成 sqlite3 的只读 URI。
+
+    两件事，缺一不可：
+
+    1) **先 realpath 解析软链接**（2026-09-29 修）。有些机器的用户目录下
+       `.workbuddy` 是指向其他盘的**符号链接目录**（把大数据搬到别的盘、只留链接）。
+       库是 **WAL 模式**（有 `-wal` / `-shm` 伴随文件），SQLite 要为 `-shm` 建共享
+       内存映射、必须把路径规范化，symlink 下规范化结果与内部比对不一致 → 直接报
+       `unable to open database file`。实测：同一 exe 走 symlink 路径必失败，
+       走 realpath 后的物理路径必成功。CPython 自带的 sqlite3 更宽容，所以
+       **纯 Python 测不出来，只有打包成 exe 才复现** —— 别只用 python 脚本验证。
+       对非链接路径 realpath 是幂等的，无副作用。
+
+    2) **再做 URI 转义**。URI 形态下 `#` 会被当成 fragment 起点截断，`?` 会被当成
+       参数起点 —— 路径里一旦出现这两个字符，sqlite 就会去开一个不存在的文件名，
+       报 `no such table`（调用方多有 except 兜底，于是**静默降级成「没数据」**）。
+       `safe=':/'` 保留冒号不编码成 `%3A`（`C:` 保持原样更像常规路径）。空格 /
+       中文 / `%` / `&` 等一律编码。
+    """
+    real = os.path.realpath(path)
+    return 'file:' + quote(real.replace('\\', '/'), safe=':/') + '?mode=ro'
+
+
 def _exe_dir():
     """程序目录。打包成 exe 时是 exe 所在目录，否则是本脚本目录。"""
     if getattr(sys, 'frozen', False):
@@ -246,6 +270,13 @@ _LOCK = threading.Lock()
 # build() 的单飞锁：force=1 与 refresher 并发时后到者直接跳过（见 build 的注释）
 _BUILD_LOCK = threading.Lock()
 _meta_cache = {'at': 0.0, 'map': {}}
+# 会话标题读库的健康状态。存在的意义：原先读库失败只在 server.log 里写一行
+# 「不影响统计」，页面上完全看不出来 —— 会话列会悄悄退化成显示会话 ID，
+# 属于最危险的那种「静默降级」。现在把它暴露到 /api/health，让降级可见。
+#   ok   : True=最近一次读库成功；False=失败（error 里有原因）
+#   error: 失败原因（成功时为 None）
+#   at   : 最近一次尝试的时间戳
+_meta_health = {'ok': None, 'error': None, 'at': 0.0}
 _STATE = {
     'data': None,
     'built_at': None,
@@ -653,24 +684,28 @@ def load_session_meta(force=False):
 
     缓存 SESSION_META_TTL 秒；读库失败不影响主流程 —— 返回空表，
     前端会退回显示会话 ID，统计数字不受任何影响。
+    但**失败会被记进 `_meta_health` 并下发到 `/api/health`**，不再只写日志。
     """
     now = time.time()
     if not force and _meta_cache['map'] and now - _meta_cache['at'] < SESSION_META_TTL:
         return _meta_cache['map']
     if not os.path.exists(DB):
+        _meta_health.update(ok=False, error='数据库不存在：%s' % DB, at=now)
         return _meta_cache['map'] or {}
     try:
-        con = sqlite3.connect('file:' + DB.replace('\\', '/') + '?mode=ro', uri=True)
+        con = sqlite3.connect(sqlite_ro_uri(DB), uri=True)
         rows = con.execute('select id, title, custom_title, cwd from sessions').fetchall()
         con.close()
     except Exception as e:
         log('读取会话标题失败（不影响统计）：%r' % e)
+        _meta_health.update(ok=False, error=repr(e), at=now)
         return _meta_cache['map'] or {}
     out = {}
     for sid, title, custom, cwd in rows:
         out[sid] = {'title': title or '', 'custom': custom or '', 'cwd': cwd or ''}
     _meta_cache['at'] = now
     _meta_cache['map'] = out
+    _meta_health.update(ok=True, error=None, at=now)
     return out
 
 
@@ -680,7 +715,7 @@ def reconcile(ses):
     if not os.path.exists(DB):
         return out
     try:
-        con = sqlite3.connect('file:' + DB.replace('\\', '/') + '?mode=ro', uri=True)
+        con = sqlite3.connect(sqlite_ro_uri(DB), uri=True)
         rows = con.execute('select session_id, credit_json from session_usage').fetchall()
         con.close()
     except Exception:
@@ -868,7 +903,16 @@ class Handler(BaseHTTPRequestHandler):
                       'scanSeconds': _STATE['scan_seconds'], 'building': _STATE['building'],
                       'parseSkipped': _STATE['skipped'],
                       'version': BE_VER,
-                      'dataRoot': WB, 'dataRootSource': WB_SOURCE}
+                      'dataRoot': WB if _is_loopback(BIND) else os.path.basename(WB),
+                      'dataRootSource': WB_SOURCE,
+                      # 会话标题读库的健康状态。None = 还没读过。
+                      # 这两个字段让「会话列悄悄退化成显示 ID」这种静默降级可见。
+                      'sessionMetaOk': _meta_health['ok'],
+                      'sessionMetaError': _meta_health['error']}
+                if not _is_loopback(BIND):
+                    # 非回环绑定 = 同网段可读这个接口，别把本机绝对路径（含用户名）送出去；
+                    # 只留末级目录名（如 .workbuddy），足够辨识数据根又泄露得最少。
+                    st['dataRootRedacted'] = True
             self._send(200, json.dumps(st, ensure_ascii=False), 'application/json; charset=utf-8')
             return
         self._send(404, 'not found', 'text/plain; charset=utf-8')

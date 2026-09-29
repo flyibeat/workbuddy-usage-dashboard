@@ -1,12 +1,37 @@
 # -*- coding: utf-8 -*-
-"""看板服务健康检查：端口监听、扫描状态、数据新鲜度。"""
+"""看板服务健康检查：端口监听、扫描状态、数据新鲜度。
+
+端口优先级：--port 参数 > 环境变量 WB_USAGE_PORT > 默认 8791。
+（服务端本就支持 `--port` 与 WB_USAGE_PORT，体检脚本跟着走，
+免得改了绑定就一律误报「服务未运行」。）
+"""
 import json
+import os
 import socket
 import sys
 import time
 import urllib.request
 
-PORT = 8791
+DEFAULT_PORT = 8791
+
+
+def _resolve_port(argv):
+    if '--port' in argv:
+        i = argv.index('--port')
+        if i + 1 < len(argv):
+            try:
+                return int(argv[i + 1])
+            except ValueError:
+                print('--port 参数无效，沿用默认 %d' % DEFAULT_PORT)
+        else:
+            print('--port 后缺少数值，沿用默认 %d' % DEFAULT_PORT)
+    try:
+        return int(os.environ.get('WB_USAGE_PORT', DEFAULT_PORT))
+    except ValueError:
+        return DEFAULT_PORT
+
+
+PORT = _resolve_port(sys.argv[1:])
 BASE = 'http://127.0.0.1:%d' % PORT
 
 
