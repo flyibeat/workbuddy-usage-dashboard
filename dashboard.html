@@ -141,8 +141,8 @@ td .mu{font-size:11px;font-weight:500;color:var(--tx2);margin-left:2px}
 <div id="err"></div>
 
 <div class="tabs" style="margin-bottom:12px">
-  <button class="btn" data-r="today">今日（按小时）</button>
-  <button class="btn on" data-r="7">近 7 天</button>
+  <button class="btn on" data-r="today">今日（按小时）</button>
+  <button class="btn" data-r="7">近 7 天</button>
   <button class="btn" data-r="14">近 14 天</button>
   <button class="btn" data-r="30">近 30 天</button>
   <button class="btn" data-r="0">全部</button>
@@ -228,7 +228,34 @@ function loadSort(lsKey,def,valid){
   return {k:def.k,d:def.d};
 }
 function saveSort(lsKey,o){ try{ localStorage.setItem(lsKey,JSON.stringify({k:o.k,d:o.d})); }catch(e){} }
-var DATA=null, RANGE=7, LAST_RANGE=null;
+
+// 时间范围记忆（2026-09-30 加）：记住上次选的范围（今日 / 近 N 天 / 全部 / 自选某天 / 自选区间），
+// 刷新页面后自动回到那个范围。**从没选过时默认「今日」**（不是近 7 天）。
+// 取值范围与按钮的 data-r 一一对应：'today' | 0（全部）| 7 | 14 | 30 | 'day:YYYY-MM-DD' | 'rng:A..B'。
+// 为什么用白名单校验而不是直接信任记忆：值可能是旧版本留下的、也可能是被手工改过的，
+// 不校验就会喂给 sliceDays() 一个怪值（同 loadSort 的道理）。
+// 键不存在（getItem 返回 null）与「存了值但值为 null」要分开 —— 后者在合法取值范围外，
+// 会走 validRange 判否退回 today，所以这里只需判 getItem 是否为 null。
+var RANGE_KEY='wb_range', RANGE_PRESETS=[0,7,14,30];
+function validRange(v){
+  if(v==='today') return true;
+  if(typeof v==='number') return RANGE_PRESETS.indexOf(v)>=0;
+  if(typeof v==='string'){
+    return /^day:\d{4}-\d{2}-\d{2}$/.test(v) || /^rng:\d{4}-\d{2}-\d{2}\.\.\d{4}-\d{2}-\d{2}$/.test(v);
+  }
+  return false;
+}
+function loadRange(){
+  try{
+    var s=localStorage.getItem(RANGE_KEY);
+    if(s===null) return 'today';               // 从没选过 → 默认今日
+    var v=JSON.parse(s);
+    return validRange(v) ? v : 'today';        // 记忆不可用 → 退回今日
+  }catch(e){ return 'today'; }                 // localStorage 被禁 / 内容不是 JSON
+}
+function saveRange(){ try{ localStorage.setItem(RANGE_KEY,JSON.stringify(RANGE)); }catch(e){} }
+
+var DATA=null, RANGE=loadRange(), LAST_RANGE=null;
 // 「每日词元构成」的横向视野：按天模式下可视区固定铺 CHART_VIS_DAYS 天，天数超过它
 // 就按比例加宽画布、交给 .chart 的横向滚动条查看其余天数（默认停在最近的那一段）。
 // 小时视图只有 24 项，天然走不到这条分支。CHART_MAX_W 是防极端天数的兜底上限。
@@ -323,7 +350,7 @@ function bindSortTh(t,onPick){
 var BASE=location.pathname.replace(/[^\/]*$/,'');
 // 前端版本号：改了这个文件就改这一行。后端版本号在 usage_server.py 的 BE_VER，
 // 由 /api/data 带过来，页头会同时显示两者（前后端各自计版本，互不牵连）。
-var FE_VER='v1.3.6';
+var FE_VER='v1.3.7';
 var tip=document.getElementById('tip');
 
 function fmt(n){ n=Number(n||0); return n.toLocaleString('en-US'); }
@@ -998,6 +1025,7 @@ function load(force){
 // 预设按钮（今日 / 近 N 天 / 全部）与两个自选按钮，都通过 setRange 收口
 function setRange(v){
   RANGE=v;
+  saveRange();                     // 记忆范围：刷新后回到这里（与上面 saveSort 同理，必须落在 RANGE 之后）
   var hm=isHourMode();
   SORT={k:hm?'hour':'date', d:hm?1:-1};
   saveSort(DAILY_SORT_KEY,SORT);   // 重置也写记忆：保证「刷新后恢复的排序 = 此刻屏上的排序」
