@@ -16,6 +16,15 @@ html,body{margin:0;padding:0}
 body{background:var(--bg);color:var(--tx);font-size:14px;line-height:1.6;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
   -webkit-font-smoothing:antialiased}
+/* 背景色带（蓝）：一层固定三色渐变（蓝→青→亮蓝）+ 自上而下渐隐，只给纯色底加层次。
+   挂 body::before，不占布局、不吃点击；底色仍由 body 的 --bg 决定，这层只是叠色。
+   本页恒为浅色底（没有深色配色），故只保留浅色一套，不跟随系统深色切换。 */
+body::before{content:'';position:fixed;inset:0 0 auto 0;height:100vh;height:100svh;
+  z-index:-1;pointer-events:none;
+  background:linear-gradient(115deg,rgba(37,99,235,.36) 0%,rgba(6,182,212,.30) 46%,rgba(59,130,246,.26) 100%);
+  -webkit-mask-image:linear-gradient(180deg,#000 0%,rgba(0,0,0,.84) 28%,rgba(0,0,0,.52) 58%,rgba(0,0,0,.22) 84%,transparent 100%);
+  mask-image:linear-gradient(180deg,#000 0%,rgba(0,0,0,.84) 28%,rgba(0,0,0,.52) 58%,rgba(0,0,0,.22) 84%,transparent 100%)}
+@media print{body::before{display:none}}
 .wrap{max-width:1220px;margin:0 auto;padding:26px 20px 64px}
 .hd{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:20px}
 .hd h1{font-size:21px;margin:0 0 4px;font-weight:650;letter-spacing:-.2px}
@@ -350,7 +359,7 @@ function bindSortTh(t,onPick){
 var BASE=location.pathname.replace(/[^\/]*$/,'');
 // 前端版本号：改了这个文件就改这一行。后端版本号在 usage_server.py 的 BE_VER，
 // 由 /api/data 带过来，页头会同时显示两者（前后端各自计版本，互不牵连）。
-var FE_VER='v1.3.7';
+var FE_VER='v1.3.8';
 var tip=document.getElementById('tip');
 
 function fmt(n){ n=Number(n||0); return n.toLocaleString('en-US'); }
