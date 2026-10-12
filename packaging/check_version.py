@@ -39,7 +39,7 @@ RE_TAG_MULTI = re.compile(r'^v\d+\.\d+\.\d+$')
 
 # FE_VER / BE_VER 仅供参考，读不到也不影响判定。
 # BE_VER 的完整形态是：
-#     BE_VER = os.environ.get('WB_VERSION', '').strip() or 'v1.0.6'
+#     BE_VER = os.environ.get('WB_VERSION', '').strip() or 'v1.0.7'
 # 但也要容忍有人把它简化成直接赋字面量，所以两个模式依次尝试。
 # （这里的版本号只是形态示例，不是校验基准 —— 标签与 FE/BE 版本互不影响。）
 BE_PATTERNS = [
