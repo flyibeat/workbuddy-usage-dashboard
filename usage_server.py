@@ -75,7 +75,7 @@ ARGV = _normalize_argv(sys.argv)
 #
 # 「改了代码就改这里」是唯一的版本来源 —— 不要靠外部变量或 git 标签注入，
 # 否则代码与版本号会各说各话。WB_VERSION 仅作临时覆盖（验证、临时构建）用。
-BE_VER = os.environ.get('WB_VERSION', '').strip() or 'v1.0.6'
+BE_VER = os.environ.get('WB_VERSION', '').strip() or 'v1.0.7'
 
 # ---- 数据根定位 -------------------------------------------------------------
 #
@@ -258,7 +258,10 @@ CACHE_PATH = os.path.join(APPDIR, 'scan-cache.json')
 # load_cache() 只认当前版本，读到旧版本直接丢弃 → 下一次 build() 全量重解析。
 # 没有这道闸门时踩过（2026-09-25）：改了 parse_file 的取值口径、换了新 exe 重启，
 # 数字一动不动 —— 因为缓存里存的是**上次解析出来的结果**，文件签名没变就不会重解析。
-CACHE_VER = 2
+#
+# v3（2026-10-12）：模型名取值从 `model or requestModelName` 改为 _pick_model()
+#   （识别 'auto' 等档位占位、保留 `aba/xxx` 供应商前缀全称），必须让旧缓存作废。
+CACHE_VER = 3
 LOG_PATH = os.path.join(APPDIR, 'server.log')
 PORT = int(os.environ.get('WB_USAGE_PORT', '8791'))
 BIND = os.environ.get('WB_USAGE_BIND', '127.0.0.1')
@@ -461,6 +464,50 @@ def _cache_hit(raw):
     return v                    # 兜底键也没给出可用值：0 照旧，None（主键脏）照旧上报
 
 
+# ---- 模型显示名解析 ---------------------------------------------------------
+#
+# providerData 里三个字段都可能写模型名，但**谁是真名并不固定，位置会双向漂移**：
+#
+#   较早的记录：档位词在 requestModelName / requestModelId（'Auto'/'auto'、
+#              '快速'/'fast-model'、'均衡'/'balanced-model'），真名在 model 字段；
+#   较新的记录：档位词在 model 字段（值 'auto'），真名在 requestModelId。
+#
+# 所以不能用「优先 model」或「优先 id」这种固定顺序 —— 那只能对一半场景，
+# 只能用「档位词在哪边就绕开哪边」的判据。
+#
+# 另外：**只有 requestModelId 保留了 `aba/deepseek-v4.1-flash` 这类带供应商
+# 前缀的全称**（model 字段只有无前缀短名）。去掉通道前缀后含 '/' 即判定为带
+# 前缀，以它为准、在看板上独立成组。
+#
+# 实测全量 31,677 条：三字段全是档位/占位的记录为 **0 条** —— 任意一条都至少有
+# 一个字段给出具体模型名，所以这套判据不存在「还原不出来」的死角。
+_MODEL_SCHEME = 'custom-local:'          # requestModelId 的通道前缀，需剥掉
+_MODEL_PLACEHOLDER = {                   # 档位 / 占位 / 空值（一律按小写比较）
+    'auto', 'fast-model', 'balanced-model', 'smart-model',
+    'default', 'unknown', 'none', 'null', 'fast', 'balanced', 'smart', '',
+}
+
+
+def _pick_model(pd):
+    """从 providerData 定出模型显示名（优先级见上面那段说明）。"""
+    raw_m = pd.get('model')
+    raw_id = pd.get('requestModelId')
+    if isinstance(raw_m, str):
+        m = raw_m.strip()
+    elif isinstance(raw_m, (int, float)):
+        m = str(raw_m)                   # 脏数据兜底，行为与旧版一致
+    else:
+        m = ''
+    rid = raw_id.strip() if isinstance(raw_id, str) else ''
+    if rid.startswith(_MODEL_SCHEME):
+        rid = rid[len(_MODEL_SCHEME):]
+    if '/' in rid:                       # 带供应商前缀：唯一能拿到全称的地方
+        return rid
+    if m.lower() in _MODEL_PLACEHOLDER:  # model 是档位词 -> 真名在 id 这边
+        return rid or m or '未知'
+    return m or rid or '未知'            # 两边都是真名 -> 保持 model（风格最统一）
+
+
 def parse_file(fp):
     """解析单个 jsonl，返回 (记录列表, 被跳过的脏记录数)。
 
@@ -512,9 +559,7 @@ def parse_file(fp):
             if inp is None or out is None or tot is None or cached is None or credit is None:
                 bad += 1
                 continue
-            model = pd.get('model') or pd.get('requestModelName') or '未知'
-            if not isinstance(model, str):
-                model = str(model) if isinstance(model, (int, float)) else '未知'
+            model = _pick_model(pd)
             recs.append([
                 ts, model,
                 inp, out, tot or (inp + out), cached, credit,
